@@ -93,7 +93,8 @@ the existing plain-text status responses are unchanged.
 - Literal banned words do not act as regular expressions.
 - Nostr zap invoices use the required description hash, and the zap receipt
   carries the zap request exactly as received, so the hash verifies.
-- Zap receipts also go to the relays named in the zap request.
+- Zap receipts also go to the public `wss://` relays named in the zap
+  request. Loopback, private, and link-local hosts are ignored.
 - The home page lists only public transactions. The Scala service also showed
   private transactions until its next restart.
 - The wallet notification endpoint rejects every call when its key file is

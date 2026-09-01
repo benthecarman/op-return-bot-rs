@@ -362,11 +362,53 @@ fn zap_request_relays(request: &Event) -> Vec<RelayUrl> {
             tag.as_slice()
                 .iter()
                 .skip(1)
-                .filter_map(|url| RelayUrl::parse(url).ok())
+                .filter_map(|url| public_zap_relay(url))
                 .take(ZAP_REQUEST_RELAYS)
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Accepts only public `wss://` relays. A zap receipt must not open
+/// WebSockets to loopback, link-local, or other private hosts.
+fn public_zap_relay(url: &str) -> Option<RelayUrl> {
+    let parsed = url::Url::parse(url).ok()?;
+    if parsed.scheme() != "wss" {
+        return None;
+    }
+    let host = parsed.host()?;
+    if !host_is_public(&host) {
+        return None;
+    }
+    RelayUrl::parse(url).ok()
+}
+
+fn host_is_public(host: &url::Host<&str>) -> bool {
+    match host {
+        url::Host::Domain(domain) => {
+            let domain = domain.trim_end_matches('.');
+            !domain.eq_ignore_ascii_case("localhost")
+                && !domain.ends_with(".localhost")
+                && !domain.ends_with(".local")
+                && !domain.ends_with(".internal")
+        }
+        url::Host::Ipv4(ip) => {
+            !(ip.is_loopback()
+                || ip.is_private()
+                || ip.is_link_local()
+                || ip.is_multicast()
+                || ip.is_unspecified()
+                || ip.is_broadcast()
+                || ip.octets()[0] == 0)
+        }
+        url::Host::Ipv6(ip) => {
+            !(ip.is_loopback()
+                || ip.is_multicast()
+                || ip.is_unspecified()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local())
+        }
+    }
 }
 
 impl TwitterPublisher {
@@ -1142,5 +1184,16 @@ mod tests {
         assert_eq!(relays.len(), 2);
         assert_eq!(relays[0].as_str(), "wss://relay.one");
         assert_eq!(relays[1].as_str(), "wss://relay.two");
+    }
+
+    #[test]
+    fn rejects_private_zap_relays() {
+        assert!(public_zap_relay("wss://relay.damus.io").is_some());
+        assert!(public_zap_relay("ws://relay.damus.io").is_none());
+        assert!(public_zap_relay("wss://127.0.0.1").is_none());
+        assert!(public_zap_relay("wss://10.0.0.1").is_none());
+        assert!(public_zap_relay("wss://169.254.169.254").is_none());
+        assert!(public_zap_relay("wss://[::1]").is_none());
+        assert!(public_zap_relay("wss://localhost").is_none());
     }
 }

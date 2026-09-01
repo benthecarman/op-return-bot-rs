@@ -61,6 +61,10 @@ struct QrQuery {
 }
 
 const DEFAULT_QR_SIZE: u32 = 300;
+/// One satoshi. LNURL-pay amounts are millisatoshis.
+const LNURL_MIN_SENDABLE_MSATS: u64 = 1_000;
+/// Two million satoshis. Donations and zaps do not need a 100 BTC ceiling.
+const LNURL_MAX_SENDABLE_MSATS: u64 = 2_000_000_000;
 
 fn qr_dimension(value: Option<&str>) -> u32 {
     value
@@ -380,8 +384,8 @@ async fn lnurl_pay_info(
     callback.query_pairs_mut().append_pair("user", &user);
     Ok(Json(serde_json::json!({
         "callback": callback,
-        "maxSendable": 100_000_000_000_u64,
-        "minSendable": 1_000_u64,
+        "maxSendable": LNURL_MAX_SENDABLE_MSATS,
+        "minSendable": LNURL_MIN_SENDABLE_MSATS,
         "metadata": metadata,
         "nostrPubkey": state.social.nostr_public_key(),
         "allowsNostr": state.social.nostr_public_key().is_some()
@@ -419,11 +423,11 @@ async fn create_lnurl_invoice(
 ) -> AppResult<String> {
     let amount = query
         .amount
-        .filter(|amount| (1_000..=100_000_000_000).contains(amount))
+        .filter(|amount| (LNURL_MIN_SENDABLE_MSATS..=LNURL_MAX_SENDABLE_MSATS).contains(amount))
         .ok_or_else(|| {
-            AppError::InvalidRequest(
-                "amount must be between 1000 and 100000000000 millisatoshis".to_owned(),
-            )
+            AppError::InvalidRequest(format!(
+                "amount must be between {LNURL_MIN_SENDABLE_MSATS} and {LNURL_MAX_SENDABLE_MSATS} millisatoshis"
+            ))
         })?;
     if let Some(request) = query.nostr {
         state.social.validate_zap_request(&request, amount)?;

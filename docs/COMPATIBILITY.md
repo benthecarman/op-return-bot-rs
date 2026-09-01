@@ -76,7 +76,7 @@ the existing plain-text status responses are unchanged.
   A mempool chain limit or any other rejection keeps the request paid and
   unpublished, and the reconciler retries it through Bitcoin Core.
 - LNURL-pay invoices commit to the metadata hash in their description hash,
-  as LUD-06 requires.
+  as LUD-06 requires. The advertised maximum is 2,000,000 satoshis.
 
 ## Intentional fixes
 

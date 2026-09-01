@@ -59,7 +59,9 @@ Import the flake module and configure the service:
 ```
 
 Credential paths in the TOML file use
-`/run/credentials/op-return-bot/<credential-name>`.
+`/run/credentials/op-return-bot/<credential-name>`. The NixOS module
+runs the service as a locked-down systemd unit. It cannot write
+anywhere except `/var/lib/op-return-bot`.
 
 Start the Rust service on a private port with a copy of the database. Check
 the home page, static assets, QR images, REST calls, MCP discovery,

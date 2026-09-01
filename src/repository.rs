@@ -314,7 +314,7 @@ impl Repository {
         let identifier = identifier.trim().to_ascii_lowercase();
         let invoice_row = sqlx::query_as::<_, InvoiceRow>(
             "SELECT r_hash, op_return_request_id, invoice, paid, amount_sats, lightning_backend, \
-             claim_preimage FROM invoices WHERE r_hash = ? OR invoice = ?",
+             claim_preimage FROM invoices WHERE r_hash = ? OR lower(invoice) = ?",
         )
         .bind(identifier.as_str())
         .bind(identifier.as_str())

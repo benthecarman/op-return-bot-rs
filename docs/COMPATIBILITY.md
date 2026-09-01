@@ -8,7 +8,8 @@ The Rust service keeps these production interfaces.
 - Form actions: `/createRequest` and `/createNip5Request`
 - Nostr and LNURL: `/.well-known/nostr.json`,
   `/.well-known/lnurlp/{user}`, and `/lnurlp/{metadata}`
-- Utilities: `/qr` and `/admin/walletnotify`
+- Utilities: `/qr` for invoices this service created, and
+  `/admin/walletnotify`
 - REST: `/api/create`, `/api/unified`, `/api/status/{rHash}`,
   `/api/view/{txId}`, and `/api/mempool-limit`
 - MCP: `/mcp` and `/.well-known/mcp.json`

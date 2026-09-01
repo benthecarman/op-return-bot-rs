@@ -637,12 +637,17 @@ async fn connect(State(state): State<AppState>) -> AppResult<Html<String>> {
     })
 }
 
-async fn qr(Query(query): Query<QrQuery>) -> AppResult<Response> {
+async fn qr(State(state): State<AppState>, Query(query): Query<QrQuery>) -> AppResult<Response> {
     let width = qr_dimension(query.width.as_deref());
     let height = qr_dimension(query.height.as_deref());
     if width == 0 || height == 0 || width > 1_000 || height > 1_000 {
         return Err(AppError::InvalidRequest(
             "QR dimensions must be between 1 and 1000 pixels".to_owned(),
+        ));
+    }
+    if !known_qr_payload(&state, &query.string).await? {
+        return Err(AppError::InvalidRequest(
+            "QR string is not a payment from this service".to_owned(),
         ));
     }
     let code = QrCode::new(query.string.as_bytes())
@@ -862,6 +867,39 @@ fn sats_to_btc(sats: i64) -> AppResult<String> {
     Ok(format!("{}.{:08}", sats / 100_000_000, sats % 100_000_000))
 }
 
+async fn known_qr_payload(state: &AppState, payload: &str) -> AppResult<bool> {
+    let identifier = qr_payment_identifier(payload).ok_or_else(|| {
+        AppError::InvalidRequest("QR string is not a payment from this service".to_owned())
+    })?;
+    match state
+        .repository
+        .find_by_invoice_identifier(&identifier)
+        .await
+    {
+        Ok(_) => Ok(true),
+        Err(AppError::NotFound(_)) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn qr_payment_identifier(payload: &str) -> Option<String> {
+    let payload = payload.trim();
+    let lower = payload.to_ascii_lowercase();
+    if lower.starts_with("lnbc") || lower.starts_with("lnbcrt") {
+        return Some(lower);
+    }
+    if let Some(rest) = lower.strip_prefix("lightning:") {
+        return Some(rest.to_owned());
+    }
+    if let Some(rest) = lower.strip_prefix("bitcoin:") {
+        return rest
+            .split(['?', '&'])
+            .find_map(|part| part.strip_prefix("lightning="))
+            .map(ToOwned::to_owned);
+    }
+    None
+}
+
 fn check_create_limit(
     state: &AppState,
     headers: &HeaderMap,
@@ -995,6 +1033,24 @@ mod tests {
         assert_eq!(parse_metadata_hash(&hash).unwrap(), [0xab; 32]);
         assert!(parse_metadata_hash("abcd").is_err());
         assert!(parse_metadata_hash("not hex").is_err());
+    }
+
+    #[test]
+    fn extracts_invoice_identifiers_from_qr_payloads() {
+        assert_eq!(
+            qr_payment_identifier("lnbc10u1abc").as_deref(),
+            Some("lnbc10u1abc")
+        );
+        assert_eq!(
+            qr_payment_identifier("lightning:LNBCRT1TEST").as_deref(),
+            Some("lnbcrt1test")
+        );
+        assert_eq!(
+            qr_payment_identifier("bitcoin:bcrt1qtest?amount=0.00001234&lightning=lnbcrt1invoice")
+                .as_deref(),
+            Some("lnbcrt1invoice")
+        );
+        assert_eq!(qr_payment_identifier("https://evil.example"), None);
     }
 
     #[test]

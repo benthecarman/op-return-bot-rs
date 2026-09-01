@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tower_http::{
     catch_panic::CatchPanicLayer,
-    cors::{Any, CorsLayer},
+    cors::{AllowOrigin, CorsLayer},
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     services::ServeDir,
     trace::TraceLayer,
@@ -164,10 +164,7 @@ struct Nip5Template<'a> {
 
 pub fn router(state: AppState) -> Router {
     let request_id_header = http::HeaderName::from_static("x-request-id");
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    let cors = cors_layer(&state);
 
     // Only the machine-facing routes allow cross-origin calls. HTML pages and
     // the wallet notification endpoint keep the browser default.
@@ -898,6 +895,32 @@ fn qr_payment_identifier(payload: &str) -> Option<String> {
             .map(ToOwned::to_owned);
     }
     None
+}
+
+fn cors_layer(state: &AppState) -> CorsLayer {
+    let mut origins = vec![
+        state
+            .config
+            .server
+            .public_url
+            .origin()
+            .ascii_serialization(),
+        state.config.server.onion_url.origin().ascii_serialization(),
+    ];
+    origins.sort();
+    origins.dedup();
+    let allowed = origins
+        .into_iter()
+        .filter_map(|origin| HeaderValue::from_str(&origin).ok())
+        .collect::<Vec<_>>();
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(allowed))
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::OPTIONS,
+        ])
+        .allow_headers([header::CONTENT_TYPE, header::ACCEPT])
 }
 
 fn check_create_limit(

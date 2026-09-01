@@ -87,6 +87,10 @@ impl McpServer {
         &self,
         Parameters(input): Parameters<CreateInput>,
     ) -> Result<Json<InvoiceOutput>, McpError> {
+        self.state
+            .creates
+            .check("mcp")
+            .map_err(|error| mcp_error(&error))?;
         let created = self
             .state
             .payments
@@ -114,6 +118,10 @@ impl McpServer {
         &self,
         Parameters(input): Parameters<CreateInput>,
     ) -> Result<Json<UnifiedOutput>, McpError> {
+        self.state
+            .creates
+            .check("mcp")
+            .map_err(|error| mcp_error(&error))?;
         let created = self
             .state
             .payments
@@ -247,6 +255,7 @@ fn mcp_error(error: &crate::AppError) -> McpError {
         crate::AppError::InvalidRequest(_) | crate::AppError::NotFound(_) => {
             McpError::invalid_params(error.to_string(), None)
         }
+        crate::AppError::RateLimited => McpError::invalid_request(error.to_string(), None),
         _ => McpError::internal_error(error.to_string(), None),
     }
 }

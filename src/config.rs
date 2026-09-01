@@ -217,6 +217,8 @@ pub struct PaymentConfig {
     pub invoice_expiry_seconds: u32,
     pub on_chain_expiry_seconds: u64,
     pub reconcile_interval_seconds: u64,
+    pub create_per_ip_per_minute: u32,
+    pub create_global_per_minute: u32,
 }
 
 impl Default for PaymentConfig {
@@ -229,6 +231,8 @@ impl Default for PaymentConfig {
             invoice_expiry_seconds: 300,
             on_chain_expiry_seconds: 7 * 24 * 60 * 60,
             reconcile_interval_seconds: 15,
+            create_per_ip_per_minute: 10,
+            create_global_per_minute: 120,
         }
     }
 }

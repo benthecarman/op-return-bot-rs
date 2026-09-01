@@ -21,6 +21,7 @@ use crate::{
     },
     lightning::{CreatedInvoice, InvoiceEvent, InvoiceState, InvoiceStream, Lightning},
     pricing::{PriceQuote, STANDARD_OP_RETURN_BYTES, quote},
+    rate_limit::RateLimiter,
     repository::{
         CompletedRequest, ExpiredCandidate, NewInvoice, NewNip5, NewOnChainPayment, NewRequest,
         NewZap, OpenInvoice, PaymentRecord, Repository,
@@ -50,6 +51,7 @@ pub struct PaymentService {
     mempool_limit: Arc<AtomicBool>,
     last_block_height: Arc<Mutex<Option<u64>>>,
     social: SocialPublisher,
+    creates: Arc<RateLimiter>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -94,6 +96,7 @@ impl PaymentService {
         bitcoin: BitcoinClient,
         lightning: Arc<dyn Lightning>,
         social: SocialPublisher,
+        creates: Arc<RateLimiter>,
     ) -> AppResult<Self> {
         Ok(Self {
             config,
@@ -110,7 +113,18 @@ impl PaymentService {
             mempool_limit: Arc::new(AtomicBool::new(false)),
             last_block_height: Arc::new(Mutex::new(None)),
             social,
+            creates,
         })
+    }
+
+    /// Records one create attempt against the shared limiter.
+    pub fn check_create_limit(&self, key: &str) -> AppResult<()> {
+        self.creates.check(key)
+    }
+
+    #[must_use]
+    pub fn creates(&self) -> Arc<RateLimiter> {
+        self.creates.clone()
     }
 
     pub async fn create_invoice(&self, input: &CreateRequest) -> AppResult<CreatedPayment> {

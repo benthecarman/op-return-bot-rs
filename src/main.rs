@@ -40,12 +40,18 @@ async fn main() -> anyhow::Result<()> {
     let social = SocialPublisher::connect(&config).await?;
     let config = std::sync::Arc::new(config);
     let repository = Repository::new(database.clone());
+    let creates = std::sync::Arc::new(op_return_bot::rate_limit::RateLimiter::new(
+        config.payments.create_per_ip_per_minute,
+        config.payments.create_global_per_minute,
+        std::time::Duration::from_secs(60),
+    ));
     let payments = PaymentService::new(
         config.clone(),
         repository.clone(),
         bitcoin,
         lightning,
         social.clone(),
+        creates.clone(),
     )?;
     tokio::spawn(payments.clone().run_reconciler());
     tokio::spawn(payments.clone().run_lightning_watch());
@@ -59,9 +65,12 @@ async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind(bind_address).await?;
 
     info!(%bind_address, "OP_RETURN Bot listening");
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     Ok(())
 }

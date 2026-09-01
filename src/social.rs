@@ -516,6 +516,9 @@ impl TelegramPublisher {
         tracing::error!(%error, update_id, chat_id, "could not handle Telegram message");
         let notice = match &error {
             AppError::InvalidRequest(reason) | AppError::NotFound(reason) => reason.clone(),
+            AppError::RateLimited => {
+                "Too many requests. Please wait a minute and try again.".to_owned()
+            }
             _ => "Something went wrong. Please try again later.".to_owned(),
         };
         if let Err(error) = self.send_text(chat_id, &notice).await {
@@ -576,6 +579,7 @@ impl TelegramPublisher {
                 let invoice = if let Some(invoice) = repository.service_state(&state_key).await? {
                     invoice
                 } else {
+                    payments.check_create_limit(&format!("telegram:{}", message.chat.id))?;
                     let created = payments
                         .create_telegram_invoice(
                             &CreateRequest {

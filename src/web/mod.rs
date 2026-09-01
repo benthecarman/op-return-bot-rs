@@ -4,7 +4,7 @@ use askama::Template;
 use axum::{
     Form, Json, Router,
     body::{Body, to_bytes},
-    extract::{Path, Query, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -26,6 +26,7 @@ use crate::{
     domain::PaymentStatus,
     payment_service::{CreateRequest, CreatedPayment},
     pricing::STANDARD_OP_RETURN_BYTES,
+    rate_limit,
 };
 
 #[derive(Deserialize)]
@@ -254,7 +255,15 @@ async fn render_index(state: &AppState, error: &str, message: &str) -> AppResult
     })
 }
 
-async fn create_request(State(state): State<AppState>, Form(form): Form<CreateForm>) -> Response {
+async fn create_request(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    Form(form): Form<CreateForm>,
+) -> Response {
+    if let Err(error) = check_create_limit(&state, &headers, Some(peer)) {
+        return error.into_response();
+    }
     let input = form.into_request();
     match state.payments.create_unified(&input).await {
         Ok(created) => Redirect::to(&format!(
@@ -284,8 +293,13 @@ async fn nip5_page(State(state): State<AppState>) -> AppResult<Html<String>> {
 
 async fn create_nip5_request(
     State(state): State<AppState>,
+    headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     Form(form): Form<Nip5Form>,
 ) -> Response {
+    if let Err(error) = check_create_limit(&state, &headers, Some(peer)) {
+        return error.into_response();
+    }
     match state.payments.create_nip5(&form.name, &form.pubkey).await {
         Ok(created) => Redirect::to(&format!(
             "/invoice?invoice={}",
@@ -373,9 +387,18 @@ async fn lnurl_pay_info(
 
 async fn lnurl_pay_callback(
     State(state): State<AppState>,
+    headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     Path(meta): Path<String>,
     Query(query): Query<LnurlCallbackQuery>,
 ) -> Response {
+    if let Err(error) = check_create_limit(&state, &headers, Some(peer)) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({ "status": "ERROR", "reason": error.to_string() })),
+        )
+            .into_response();
+    }
     match create_lnurl_invoice(&state, &meta, query).await {
         Ok(invoice) => Json(serde_json::json!({ "pr": invoice, "routes": [] })).into_response(),
         Err(error) => (
@@ -433,7 +456,13 @@ fn parse_metadata_hash(meta: &str) -> AppResult<[u8; 32]> {
         })
 }
 
-async fn api_create(State(state): State<AppState>, request: Request<Body>) -> AppResult<String> {
+async fn api_create(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    request: Request<Body>,
+) -> AppResult<String> {
+    check_create_limit(&state, &headers, Some(peer))?;
     let form = parse_create_request(request).await?;
     let created = state.payments.create_invoice(&form.into_request()).await?;
     Ok(created
@@ -445,8 +474,11 @@ async fn api_create(State(state): State<AppState>, request: Request<Body>) -> Ap
 
 async fn api_unified(
     State(state): State<AppState>,
+    headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     request: Request<Body>,
 ) -> AppResult<Json<UnifiedResponse>> {
+    check_create_limit(&state, &headers, Some(peer))?;
     let form = parse_create_request(request).await?;
     let created = state.payments.create_unified(&form.into_request()).await?;
     Ok(Json(unified_response(&created)?))
@@ -814,6 +846,14 @@ fn sats_to_btc(sats: i64) -> AppResult<String> {
         return Err(AppError::Internal("payment amount is negative".to_owned()));
     }
     Ok(format!("{}.{:08}", sats / 100_000_000, sats % 100_000_000))
+}
+
+fn check_create_limit(
+    state: &AppState,
+    headers: &HeaderMap,
+    peer: Option<std::net::SocketAddr>,
+) -> AppResult<()> {
+    state.creates.check(&rate_limit::caller_key(headers, peer))
 }
 
 fn render(template: impl Template) -> AppResult<Html<String>> {

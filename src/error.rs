@@ -18,6 +18,8 @@ pub enum AppError {
     Migration(#[from] sqlx::migrate::MigrateError),
     #[error("invalid request: {0}")]
     InvalidRequest(String),
+    #[error("too many requests")]
+    RateLimited,
     #[error("not found: {0}")]
     NotFound(String),
     #[error("upstream service error: {0}")]
@@ -32,6 +34,7 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = match self {
             Self::InvalidRequest(_) => StatusCode::BAD_REQUEST,
+            Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Config(_)
             | Self::Database(_)

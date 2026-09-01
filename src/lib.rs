@@ -8,6 +8,7 @@ pub mod lightning;
 pub mod mcp;
 pub mod payment_service;
 pub mod pricing;
+pub mod rate_limit;
 pub mod repository;
 pub mod social;
 pub mod state;

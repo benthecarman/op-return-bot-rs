@@ -55,6 +55,8 @@ non_standard_fee_sats = 1000
 invoice_expiry_seconds = 300
 on_chain_expiry_seconds = 604800
 reconcile_interval_seconds = 15
+create_per_ip_per_minute = 10
+create_global_per_minute = 120
 
 [external]
 mempool_url = "https://mempool.space"

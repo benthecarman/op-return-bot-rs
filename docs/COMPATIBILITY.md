@@ -109,6 +109,10 @@ the existing plain-text status responses are unchanged.
   purchases.
 - Cross-origin requests are allowed on the API, LNURL, NIP-05, and MCP
   routes only.
+- Create routes share a process-wide rate limit. The default is 10
+  invoices per IP per minute and 120 invoices per minute for the process.
+  Telegram create commands count against the same budget. Set a limit to
+  0 to disable it.
 - The MCP server accepts the onion host.
 
 ## Not carried over

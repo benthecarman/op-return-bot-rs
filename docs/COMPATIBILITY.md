@@ -58,7 +58,8 @@ the existing plain-text status responses are unchanged.
   which is seven days by default, as before.
   A request is never closed while its invoice is settled on the backend,
   while the backend cannot answer, or after a payment arrived.
-- LND is the default Lightning backend. ldk-server is selectable.
+- LND is the default Lightning backend. ldk-server is selectable. The
+  LND credential is an invoice macaroon.
 
 ## Transaction and price rules
 

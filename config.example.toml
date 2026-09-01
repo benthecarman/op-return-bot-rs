@@ -23,7 +23,7 @@ backend = "lnd"
 
 [lightning.lnd]
 rpc_url = "https://127.0.0.1:10009"
-macaroon_file = "/run/credentials/op-return-bot/lnd-admin.macaroon"
+macaroon_file = "/run/credentials/op-return-bot/lnd-invoice.macaroon"
 tls_cert_file = "/run/credentials/op-return-bot/lnd-tls.cert"
 
 [lightning.ldk_server]

@@ -24,6 +24,9 @@ same SQLite data and public routes. Plan a one-hour maintenance window.
 
 4. Create `op-return-bot.toml` from `config.example.toml`. Put each secret in a
    separate file. Set `lightning.backend` to `lnd` for the first deployment.
+   Give LND an invoice macaroon, not `admin.macaroon`. The service only
+   creates, looks up, subscribes to, and cancels invoices. An admin
+   macaroon can spend node funds if the process or credential store leaks.
 5. Test the full flow on regtest: create a web request, pay by Lightning, pay a
    unified request on-chain, restart the service before settlement, and confirm
    that reconciliation creates each OP_RETURN only once.
@@ -42,7 +45,7 @@ Import the flake module and configure the service:
     credentials = {
       bitcoin-rpc-password = /run/secrets/bitcoin-rpc-password;
       wallet-notify-key = /run/secrets/wallet-notify-key;
-      lnd-admin.macaroon = /run/secrets/lnd-admin.macaroon;
+      lnd-invoice.macaroon = /run/secrets/lnd-invoice.macaroon;
       lnd-tls.cert = /run/secrets/lnd-tls.cert;
       nostr-nsec = /run/secrets/nostr-nsec;
       twitter-consumer-key = /run/secrets/twitter-consumer-key;

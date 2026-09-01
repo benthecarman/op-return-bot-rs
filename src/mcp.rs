@@ -256,6 +256,9 @@ fn mcp_error(error: &crate::AppError) -> McpError {
             McpError::invalid_params(error.to_string(), None)
         }
         crate::AppError::RateLimited => McpError::invalid_request(error.to_string(), None),
-        _ => McpError::internal_error(error.to_string(), None),
+        _ => {
+            tracing::error!(%error, "MCP request failed");
+            McpError::internal_error("internal error", None)
+        }
     }
 }

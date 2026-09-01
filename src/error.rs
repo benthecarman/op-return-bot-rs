@@ -44,7 +44,18 @@ impl IntoResponse for AppError {
             | Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
-        let message = self.to_string();
+        let public = matches!(
+            self,
+            Self::InvalidRequest(_) | Self::RateLimited | Self::NotFound(_)
+        );
+        if !public {
+            tracing::error!(error = %self, "request failed");
+        }
+        let message = if public {
+            self.to_string()
+        } else {
+            "internal error".to_owned()
+        };
         (status, Json(json!({ "error": message }))).into_response()
     }
 }

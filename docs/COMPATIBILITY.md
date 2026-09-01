@@ -111,6 +111,8 @@ the existing plain-text status responses are unchanged.
   purchases.
 - Cross-origin requests are allowed on the API, LNURL, NIP-05, and MCP
   routes only.
+- Internal, database, and upstream errors return a generic `internal
+  error` body. The detailed message stays in the service log.
 - Create routes share a process-wide rate limit. The default is 10
   invoices per IP per minute and 120 invoices per minute for the process.
   Telegram create commands count against the same budget. Set a limit to

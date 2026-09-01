@@ -26,7 +26,8 @@ the existing plain-text status responses are unchanged.
 ## Data and payments
 
 - Existing SQLite rows remain in place. Legacy hex-encoded message and fee-rate
-  values remain readable and new rows use the same encoding.
+  values remain readable and new rows use the same encoding. The database
+  uses WAL with `synchronous=FULL`.
 - Lightning invoices for requests commit to the SHA-256 of the message in
   their description hash, as before. The invoice page shows the same hash.
 - New requests are accepted while the mempool chain limit is active. The

@@ -30,7 +30,7 @@ impl Database {
             .create_if_missing(true)
             .foreign_keys(true)
             .journal_mode(SqliteJournalMode::Wal)
-            .synchronous(SqliteSynchronous::Normal)
+            .synchronous(SqliteSynchronous::Full)
             .busy_timeout(Duration::from_secs(config.busy_timeout_seconds));
         let pool = SqlitePoolOptions::new()
             .max_connections(config.max_connections)

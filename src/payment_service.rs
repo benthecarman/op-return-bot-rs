@@ -37,6 +37,8 @@ const ZAP_WINDOW_SECONDS: i64 = 86_400;
 const ZAPS_PER_PASS: u32 = 256;
 /// Wait between attempts to subscribe to Lightning invoice updates.
 const SUBSCRIPTION_RETRY: Duration = Duration::from_secs(5);
+const MIN_FEE_RATE_SAT_VB: u64 = 1;
+const MAX_FEE_RATE_SAT_VB: u64 = 1_000;
 
 #[derive(Clone)]
 pub struct PaymentService {
@@ -312,7 +314,7 @@ impl PaymentService {
         }
         .await;
         match primary {
-            Ok(fees) => Ok(fees.fastest_fee),
+            Ok(fees) => clamp_fee_rate(fees.fastest_fee),
             Err(error) => {
                 tracing::warn!(%error, "mempool.space fee request failed; using bitcoiner.live");
                 self.bitcoiner_live_fee().await
@@ -1036,9 +1038,10 @@ impl PaymentService {
                 "backup fee response has an invalid rate".to_owned(),
             ));
         }
-        rate.ceil().to_string().parse::<u64>().map_err(|error| {
+        let rate = rate.ceil().to_string().parse::<u64>().map_err(|error| {
             AppError::Upstream(format!("backup fee response has an invalid rate: {error}"))
-        })
+        })?;
+        clamp_fee_rate(rate)
     }
 
     async fn btc_price_cents(&self) -> AppResult<i64> {
@@ -1191,6 +1194,16 @@ fn profit(record: &PaymentRecord, fee_sats: u64) -> Option<i64> {
         })?;
     let fee = i64::try_from(fee_sats).ok()?;
     paid_sats.checked_sub(fee)
+}
+
+fn clamp_fee_rate(rate: u64) -> AppResult<u64> {
+    if (MIN_FEE_RATE_SAT_VB..=MAX_FEE_RATE_SAT_VB).contains(&rate) {
+        Ok(rate)
+    } else {
+        Err(AppError::Upstream(format!(
+            "fee rate {rate} sat/vB is outside {MIN_FEE_RATE_SAT_VB}..={MAX_FEE_RATE_SAT_VB}"
+        )))
+    }
 }
 
 fn is_mempool_limit_error(message: &str) -> bool {
@@ -1404,6 +1417,14 @@ mod tests {
         };
         assert_eq!(transaction_fee(&transaction, 20_000).unwrap(), 2_000);
         assert!(transaction_fee(&transaction, 17_000).is_err());
+    }
+
+    #[test]
+    fn rejects_fee_rates_outside_the_safe_range() {
+        assert_eq!(clamp_fee_rate(1).unwrap(), 1);
+        assert_eq!(clamp_fee_rate(1_000).unwrap(), 1_000);
+        assert!(clamp_fee_rate(0).is_err());
+        assert!(clamp_fee_rate(1_001).is_err());
     }
 
     #[test]

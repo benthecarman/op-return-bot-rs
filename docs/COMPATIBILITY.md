@@ -65,7 +65,8 @@ the existing plain-text status responses are unchanged.
   most confirmed output of the sending wallet that can pay the fee, with
   unconfirmed outputs as the fallback, as before.
 - The standard and non-standard fee formulas, application fee, privacy fee,
-  non-standard fee, and 99,000-byte limit remain unchanged.
+  non-standard fee, and 99,000-byte limit remain unchanged. Fee oracles
+  must return 1 to 1,000 sat/vB. A value outside that range is rejected.
 - The chain fee is the fee rate multiplied by the virtual size of the signed
   transaction, so large messages pay the intended rate.
 - Standard transactions also go to Esplora. All transactions go to MARA

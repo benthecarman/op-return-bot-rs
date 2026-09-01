@@ -1,4 +1,8 @@
-use std::{io::Cursor, str::FromStr};
+use std::{
+    io::Cursor,
+    net::{IpAddr, SocketAddr},
+    str::FromStr,
+};
 
 use askama::Template;
 use axum::{
@@ -67,7 +71,6 @@ fn qr_dimension(value: Option<&str>) -> u32 {
 #[derive(Deserialize)]
 struct WalletNotifyEvent {
     txid: String,
-    key: String,
 }
 
 #[derive(Deserialize)]
@@ -658,8 +661,13 @@ async fn qr(Query(query): Query<QrQuery>) -> AppResult<Response> {
 
 async fn wallet_notify(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(event): Json<WalletNotifyEvent>,
 ) -> AppResult<Response> {
+    if !is_loopback(peer.ip()) {
+        return Ok((StatusCode::UNAUTHORIZED, "Unauthorized").into_response());
+    }
     let expected = tokio::fs::read(&state.config.bitcoin.wallet_notify_key_file)
         .await
         .map_err(|error| {
@@ -674,9 +682,11 @@ async fn wallet_notify(
             "the wallet notification key file is empty".to_owned(),
         ));
     }
-    let expected_hash = Sha256::digest(expected);
-    let supplied_hash = Sha256::digest(event.key.trim().as_bytes());
-    if expected_hash != supplied_hash {
+    let supplied = headers
+        .get("x-wallet-notify-key")
+        .map(HeaderValue::as_bytes)
+        .unwrap_or_default();
+    if !constant_time_eq(expected, supplied) {
         return Ok((StatusCode::UNAUTHORIZED, "Unauthorized").into_response());
     }
     let txid = event.txid.trim().to_owned();
@@ -863,6 +873,25 @@ fn render(template: impl Template) -> AppResult<Html<String>> {
         .map_err(|error| AppError::Internal(format!("could not render page: {error}")))
 }
 
+fn is_loopback(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => ip.is_loopback(),
+        IpAddr::V6(ip) => {
+            ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback())
+        }
+    }
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right.iter())
+        .fold(0_u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
+}
+
 fn trim_ascii(bytes: &[u8]) -> &[u8] {
     let start = bytes
         .iter()
@@ -939,6 +968,21 @@ mod tests {
         assert_eq!(qr_dimension(None), 300);
         assert_eq!(qr_dimension(Some("abc")), 300);
         assert_eq!(qr_dimension(Some(" 450 ")), 450);
+    }
+
+    #[test]
+    fn treats_only_loopback_as_local() {
+        assert!(is_loopback("127.0.0.1".parse().unwrap()));
+        assert!(is_loopback("::1".parse().unwrap()));
+        assert!(is_loopback("::ffff:127.0.0.1".parse().unwrap()));
+        assert!(!is_loopback("8.8.8.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn compares_wallet_keys_in_constant_time() {
+        assert!(constant_time_eq(b"secret", b"secret"));
+        assert!(!constant_time_eq(b"secret", b"Secret"));
+        assert!(!constant_time_eq(b"secret", b"secre"));
     }
 
     #[test]

@@ -96,7 +96,8 @@ the existing plain-text status responses are unchanged.
 - The home page lists only public transactions. The Scala service also showed
   private transactions until its next restart.
 - The wallet notification endpoint rejects every call when its key file is
-  empty.
+  empty. It also rejects peers that are not loopback. The shared key is
+  sent in `X-Wallet-Notify-Key` and compared in constant time.
 - One failing request no longer stops reconciliation for other requests. A
   stored transaction whose input disappeared is rebuilt.
 - Regtest invoices are rejected on mainnet.

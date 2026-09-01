@@ -94,11 +94,16 @@ exec /nix/store/...-op-return-bot/bin/op-return-bot-walletnotify "$1"
 ```
 
 Bitcoin Core passes the transaction ID as `%s`. The final `walletnotify`
-setting must call the wrapper with `%s`. Bitcoin Core calls the command for
-every loaded wallet. Calls for transactions that the receiving wallet does not
-know return `OK (0 payments)`. The service also lists recent labelled receives
-every 15 seconds. This scan recovers notifications that arrive while the
-service is stopped.
+setting must call the wrapper with `%s`. The wrapper sends the key in the
+`X-Wallet-Notify-Key` header. Do not proxy `/admin/walletnotify` to the
+public internet. The handler rejects any peer that is not loopback, even
+when the key is correct.
+
+Bitcoin Core calls the command for every loaded wallet. Calls for
+transactions that the receiving wallet does not know return `OK (0
+payments)`. The service also lists recent labelled receives every 15
+seconds. This scan recovers notifications that arrive while the service
+is stopped.
 
 The service spends the on-chain payment output itself when it creates the
 OP_RETURN transaction for an on-chain payment. The receiving wallet must be

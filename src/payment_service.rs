@@ -349,27 +349,6 @@ impl PaymentService {
         Ok(true)
     }
 
-    /// Checks every open invoice of this backend and publishes settled ones.
-    pub async fn poll_lightning(&self) -> AppResult<()> {
-        let now = unix_time()?;
-        let window = i64::from(self.config.payments.invoice_expiry_seconds)
-            .saturating_add(INVOICE_CLOSE_GRACE_SECONDS);
-        let open = self
-            .repository
-            .open_invoices(self.lightning.backend(), now.saturating_sub(window))
-            .await?;
-        for invoice in open {
-            match self.lightning.invoice_state(&invoice.payment_hash).await {
-                Ok(InvoiceState::Settled { .. }) => self.settle_invoice(&invoice).await,
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::warn!(%error, payment_hash = %invoice.payment_hash, "could not look up invoice");
-                }
-            }
-        }
-        Ok(())
-    }
-
     async fn settle_invoice(&self, invoice: &OpenInvoice) {
         match self
             .repository
@@ -575,9 +554,6 @@ impl PaymentService {
         if let Err(error) = self.close_expired_requests().await {
             tracing::error!(%error, "could not close expired requests");
         }
-        if let Err(error) = self.poll_lightning().await {
-            tracing::error!(%error, "could not check Lightning invoices");
-        }
         if let Err(error) = self.poll_on_chain().await {
             tracing::error!(%error, "could not check on-chain payments");
         }
@@ -721,25 +697,15 @@ impl PaymentService {
         }
     }
 
-    /// Watches for Lightning payments. With a backend that streams invoice
-    /// updates, the service subscribes and reconnects when the stream ends.
-    /// Otherwise it polls open invoices every few seconds.
+    /// Watches for Lightning payments through the backend subscription and
+    /// reconnects when the stream ends.
     pub async fn run_lightning_watch(self) {
         loop {
             match self.lightning.subscribe_invoices().await {
-                Ok(Some(events)) => {
+                Ok(events) => {
                     tracing::info!("subscribed to Lightning invoice updates");
-                    // Settle anything that was paid while no subscription
-                    // was active.
-                    if let Err(error) = self.poll_lightning().await {
-                        tracing::error!(%error, "could not check Lightning invoices");
-                    }
                     self.consume_invoice_events(events).await;
                     tracing::warn!("Lightning invoice subscription ended; reconnecting");
-                }
-                Ok(None) => {
-                    self.run_lightning_poll().await;
-                    return;
                 }
                 Err(error) => {
                     tracing::error!(%error, "could not subscribe to Lightning invoice updates");
@@ -792,20 +758,6 @@ impl PaymentService {
             }
         }
         self.publish_zap(payment_hash, preimage).await;
-    }
-
-    /// Polls open invoices often so that a Lightning payment is noticed
-    /// within seconds. Used when the backend cannot stream invoice updates.
-    async fn run_lightning_poll(&self) {
-        let mut interval = tokio::time::interval(Duration::from_secs(
-            self.config.payments.lightning_poll_seconds,
-        ));
-        loop {
-            interval.tick().await;
-            if let Err(error) = self.poll_lightning().await {
-                tracing::error!(%error, "could not check Lightning invoices");
-            }
-        }
     }
 
     /// Creates and broadcasts the `OP_RETURN` transaction for a paid request.

@@ -6,7 +6,7 @@ use op_return_bot::{
     domain::{LightningBackend, PaymentStatus},
     repository::{
         CompletedRequest, ExpiredCandidate, NewInvoice, NewNip5, NewOnChainPayment, NewRequest,
-        NewZap, OpenInvoice, Repository,
+        NewZap, Repository,
     },
 };
 use tempfile::TempDir;
@@ -250,7 +250,7 @@ fn on_chain(address: &str) -> NewOnChainPayment<'_> {
 }
 
 #[tokio::test]
-async fn lists_open_payments_and_paid_but_unpublished_requests() {
+async fn lists_on_chain_and_paid_but_unpublished_requests() {
     let (_directory, database) = database().await;
     let repository = Repository::new(database);
     let created = repository
@@ -259,31 +259,6 @@ async fn lists_open_payments_and_paid_but_unpublished_requests() {
         .unwrap();
     let request_id = created.request.id;
 
-    let open = repository
-        .open_invoices(LightningBackend::Lnd, 1_000_000_000)
-        .await
-        .unwrap();
-    assert_eq!(
-        open,
-        vec![OpenInvoice {
-            request_id,
-            payment_hash: invoice().payment_hash.to_owned(),
-        }]
-    );
-    assert!(
-        repository
-            .open_invoices(LightningBackend::LdkServer, 1_000_000_000)
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    assert!(
-        repository
-            .open_invoices(LightningBackend::Lnd, 1_900_000_000)
-            .await
-            .unwrap()
-            .is_empty()
-    );
     let addresses = repository
         .open_on_chain_payments(1_000_000_000)
         .await

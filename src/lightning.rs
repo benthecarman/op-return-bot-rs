@@ -2,13 +2,16 @@ use std::{pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
 use fedimint_tonic_lnd::{invoicesrpc, lnrpc, tonic};
-use futures_util::{Stream, StreamExt};
+use futures_util::{Stream, StreamExt, stream};
 use ldk_server_client::{
     client::LdkServerClient,
     config::{load_config, resolve_api_key, resolve_base_url, resolve_cert_path},
     ldk_server_grpc::{
         api::{Bolt11ReceiveRequest, GetNodeInfoRequest, GetPaymentDetailsRequest},
-        types::{Bolt11InvoiceDescription, PaymentStatus, bolt11_invoice_description},
+        events::{EventEnvelope, event_envelope},
+        types::{
+            Bolt11InvoiceDescription, PaymentStatus, bolt11_invoice_description, payment_kind,
+        },
     },
 };
 
@@ -71,9 +74,8 @@ pub trait Lightning: Send + Sync {
     async fn invoice_state(&self, payment_hash: &str) -> AppResult<InvoiceState>;
 
     /// Streams invoices as they settle. The stream ends when the connection
-    /// drops. Backends without a subscription API return `None`, and the
-    /// service polls open invoices instead.
-    async fn subscribe_invoices(&self) -> AppResult<Option<InvoiceStream>>;
+    /// drops, and the caller reconnects.
+    async fn subscribe_invoices(&self) -> AppResult<InvoiceStream>;
 
     /// Cancels an open invoice so that it can no longer be paid. Backends
     /// that cannot cancel invoices return `Ok` and log the limitation.
@@ -238,7 +240,7 @@ impl Lightning for LndLightning {
         Ok(state)
     }
 
-    async fn subscribe_invoices(&self) -> AppResult<Option<InvoiceStream>> {
+    async fn subscribe_invoices(&self) -> AppResult<InvoiceStream> {
         let updates = self
             .client
             .clone()
@@ -258,7 +260,7 @@ impl Lightning for LndLightning {
                 )))),
             }
         });
-        Ok(Some(Box::pin(events)))
+        Ok(Box::pin(events))
     }
 
     async fn cancel_invoice(&self, payment_hash: &str) -> AppResult<()> {
@@ -416,8 +418,25 @@ impl Lightning for LdkServerLightning {
         Ok(InvoiceState::Settled { preimage })
     }
 
-    async fn subscribe_invoices(&self) -> AppResult<Option<InvoiceStream>> {
-        Ok(None)
+    async fn subscribe_invoices(&self) -> AppResult<InvoiceStream> {
+        let updates = self.client.subscribe_events().await.map_err(|error| {
+            AppError::Upstream(format!("ldk-server SubscribeEvents failed: {error}"))
+        })?;
+        let events = stream::unfold(updates, |mut updates| async move {
+            updates.next_message().await.map(|result| {
+                let result = result.map_err(|error| {
+                    AppError::Upstream(format!("ldk-server event stream failed: {error}"))
+                });
+                (result, updates)
+            })
+        })
+        .filter_map(|result| async move {
+            match result {
+                Ok(event) => ldk_settled_event(event).map(Ok),
+                Err(error) => Some(Err(error)),
+            }
+        });
+        Ok(Box::pin(events))
     }
 
     async fn cancel_invoice(&self, payment_hash: &str) -> AppResult<()> {
@@ -447,6 +466,30 @@ fn ldk_endpoint(url: &url::Url) -> AppResult<String> {
         .port_or_known_default()
         .ok_or_else(|| AppError::Config("ldk-server RPC URL has no port".to_owned()))?;
     Ok(format!("{host}:{port}"))
+}
+
+fn ldk_settled_event(envelope: EventEnvelope) -> Option<InvoiceEvent> {
+    let event_envelope::Event::PaymentReceived(received) = envelope.event? else {
+        return None;
+    };
+    let payment = received.payment?;
+    if payment.status != PaymentStatus::Succeeded as i32 {
+        return None;
+    }
+    let payment_kind::Kind::Bolt11(bolt11) = payment.kind?.kind? else {
+        return None;
+    };
+    if bolt11.hash.is_empty() {
+        return None;
+    }
+    let preimage = bolt11
+        .preimage
+        .and_then(|preimage| hex::decode(preimage).ok())
+        .unwrap_or_default();
+    Some(InvoiceEvent::Settled {
+        payment_hash: bolt11.hash,
+        preimage,
+    })
 }
 
 fn preferred_node_uri(uris: Vec<String>) -> Option<String> {
@@ -493,6 +536,37 @@ mod tests {
             ..settled
         };
         assert_eq!(settled_event(underpaid), None);
+    }
+
+    #[test]
+    fn maps_ldk_payment_received_events_to_invoices() {
+        let envelope = EventEnvelope {
+            event: Some(event_envelope::Event::PaymentReceived(
+                ldk_server_client::ldk_server_grpc::events::PaymentReceived {
+                    payment: Some(ldk_server_client::ldk_server_grpc::types::Payment {
+                        kind: Some(ldk_server_client::ldk_server_grpc::types::PaymentKind {
+                            kind: Some(payment_kind::Kind::Bolt11(
+                                ldk_server_client::ldk_server_grpc::types::Bolt11 {
+                                    hash: "ab".repeat(32),
+                                    preimage: Some("07".repeat(32)),
+                                    ..Default::default()
+                                },
+                            )),
+                        }),
+                        status: PaymentStatus::Succeeded as i32,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            )),
+        };
+        assert_eq!(
+            ldk_settled_event(envelope),
+            Some(InvoiceEvent::Settled {
+                payment_hash: "ab".repeat(32),
+                preimage: vec![7; 32],
+            })
+        );
     }
 
     #[test]

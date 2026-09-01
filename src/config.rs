@@ -62,13 +62,9 @@ impl AppConfig {
                 "payments.invoice_expiry_seconds must be greater than zero".to_owned(),
             ));
         }
-        if self.payments.reconcile_interval_seconds == 0
-            || self.payments.lightning_poll_seconds == 0
-        {
+        if self.payments.reconcile_interval_seconds == 0 {
             return Err(AppError::Config(
-                "payments.reconcile_interval_seconds and payments.lightning_poll_seconds must be \
-                 greater than zero"
-                    .to_owned(),
+                "payments.reconcile_interval_seconds must be greater than zero".to_owned(),
             ));
         }
         if self.nostr.private_key_file.is_some() && self.nostr.relays.is_empty() {
@@ -221,7 +217,6 @@ pub struct PaymentConfig {
     pub invoice_expiry_seconds: u32,
     pub on_chain_expiry_seconds: u64,
     pub reconcile_interval_seconds: u64,
-    pub lightning_poll_seconds: u64,
 }
 
 impl Default for PaymentConfig {
@@ -234,7 +229,6 @@ impl Default for PaymentConfig {
             invoice_expiry_seconds: 300,
             on_chain_expiry_seconds: 7 * 24 * 60 * 60,
             reconcile_interval_seconds: 15,
-            lightning_poll_seconds: 2,
         }
     }
 }

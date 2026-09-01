@@ -460,31 +460,6 @@ impl Repository {
         })
     }
 
-    /// Unpaid invoices for one backend, newest first.
-    pub async fn open_invoices(
-        &self,
-        backend: LightningBackend,
-        created_after: i64,
-    ) -> AppResult<Vec<OpenInvoice>> {
-        let rows: Vec<(i64, String)> = sqlx::query_as(
-            "SELECT r.id, i.r_hash FROM invoices i JOIN op_return_requests r \
-             ON r.id = i.op_return_request_id \
-             WHERE r.closed = 0 AND r.txid IS NULL AND i.paid = 0 \
-             AND i.lightning_backend = ? AND r.time >= ? ORDER BY r.id DESC",
-        )
-        .bind(backend.as_str())
-        .bind(created_after)
-        .fetch_all(self.database.pool())
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|(request_id, payment_hash)| OpenInvoice {
-                request_id,
-                payment_hash,
-            })
-            .collect())
-    }
-
     /// Unpaid on-chain payment requests, newest first.
     pub async fn open_on_chain_payments(
         &self,

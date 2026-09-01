@@ -41,12 +41,13 @@ the existing plain-text status responses are unchanged.
   same request on LND. ldk-server cannot cancel invoices.
 - The `walletnotify` endpoint remains the main on-chain trigger. It replies
   at once and processes the transaction in the background, as before.
-- The service subscribes to LND invoice updates, as before, and reconnects
-  when the stream ends. ldk-server has no subscription, so a 2-second poll
-  checks its open invoices instead. A 15-second reconciliation pass checks
-  on-chain payments with one wallet call, retries paid requests, closes
-  expired requests, and publishes zap receipts. Both intervals are
-  configurable.
+- The service subscribes to invoice updates from both LND and ldk-server and
+  reconnects when a stream ends. It does not poll open Lightning invoices.
+  The ldk-server event stream is live-only, so `/processunhandled` remains the
+  manual recovery path for a payment received while the subscriber was down.
+  A 15-second reconciliation pass checks on-chain payments with one wallet
+  call, retries paid requests, closes expired requests, and publishes zap
+  receipts. The reconciliation interval is configurable.
 - The chain fee and virtual size of a request are written when its
   transaction is published, as before. The signed transaction itself is
   stored before broadcast.

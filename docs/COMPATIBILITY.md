@@ -5,7 +5,8 @@ The Rust service keeps these production interfaces.
 ## Web and API routes
 
 - Pages: `/`, `/nip5`, `/invoice`, `/success`, and `/connect`. HTML
-  pages load only first-party CSS and JavaScript.
+  pages load only first-party CSS and JavaScript. The invoice page
+  stays on the current origin after payment, including the onion site.
 - Form actions: `/createRequest` and `/createNip5Request`
 - Nostr and LNURL: `/.well-known/nostr.json`,
   `/.well-known/lnurlp/{user}`, and `/lnurlp/{metadata}`

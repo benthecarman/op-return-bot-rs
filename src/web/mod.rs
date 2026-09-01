@@ -210,6 +210,7 @@ pub fn router(state: AppState) -> Router {
         .merge(api)
         .fallback(not_found)
         .with_state(state)
+        .layer(axum::middleware::from_fn(security_headers))
         .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
         .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid))
         .layer(TraceLayer::new_for_http())
@@ -895,6 +896,40 @@ fn qr_payment_identifier(payload: &str) -> Option<String> {
             .map(ToOwned::to_owned);
     }
     None
+}
+
+async fn security_headers(request: Request<Body>, next: axum::middleware::Next) -> Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'self'; \
+             script-src 'self' 'unsafe-inline'; \
+             style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data:; \
+             font-src 'self'; \
+             connect-src 'self'; \
+             object-src 'none'; \
+             base-uri 'self'; \
+             form-action 'self'; \
+             frame-ancestors 'none'",
+        ),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        header::HeaderName::from_static("permissions-policy"),
+        HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+    );
+    response
 }
 
 fn cors_layer(state: &AppState) -> CorsLayer {

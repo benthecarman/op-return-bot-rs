@@ -83,6 +83,9 @@ the existing plain-text status responses are unchanged.
 - Repeated messages can create separate invoices.
 - UTF-8 message limits count bytes, not characters.
 - NIP-05 request data is stored in the same transaction as its payment data.
+  Closing an unpaid request deletes its NIP-05 row so the name can be bought
+  again. Names that were already stuck on closed unpaid requests are removed
+  by a one-time migration.
 - A signed Bitcoin transaction is stored before broadcast and can be retried.
 - Concurrent settlements cannot spend the same wallet output.
 - Paid requests recover after a crash between payment detection and broadcast.

@@ -529,8 +529,10 @@ impl Repository {
     }
 
     /// Closes an unpaid request. Returns false when the request was already
-    /// closed, completed, or paid in the meantime.
+    /// closed, completed, or paid in the meantime. An unpaid NIP-05 name is
+    /// released so that a later buyer can reserve it.
     pub async fn close_request(&self, request_id: i64) -> AppResult<bool> {
+        let mut transaction = self.database.pool().begin().await?;
         let result = sqlx::query(
             "UPDATE op_return_requests SET closed = 1 \
              WHERE id = ? AND closed = 0 AND txid IS NULL \
@@ -540,9 +542,17 @@ impl Repository {
                  WHERE p.op_return_request_id = op_return_requests.id AND p.txid IS NOT NULL)",
         )
         .bind(request_id)
-        .execute(self.database.pool())
+        .execute(&mut *transaction)
         .await?;
-        Ok(result.rows_affected() == 1)
+        if result.rows_affected() != 1 {
+            return Ok(false);
+        }
+        sqlx::query("DELETE FROM nip5 WHERE op_return_request_id = ?")
+            .bind(request_id)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(true)
     }
 
     /// Closes a legacy request whose transaction was already completed.
@@ -798,7 +808,11 @@ impl Repository {
     }
 }
 
-const NIP5_NAME_EXISTS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM nip5 WHERE lower(name) = lower(?))";
+const NIP5_NAME_EXISTS_SQL: &str = "SELECT EXISTS(\
+     SELECT 1 FROM nip5 n JOIN op_return_requests r \
+     ON r.id = n.op_return_request_id \
+     WHERE lower(n.name) = lower(?) \
+     AND (r.closed = 0 OR r.txid IS NOT NULL))";
 
 fn nip5_name_taken(name: &str) -> AppError {
     AppError::InvalidRequest(format!("NIP-05 name '{name}' is already reserved"))

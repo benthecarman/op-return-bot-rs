@@ -540,6 +540,46 @@ async fn rejects_a_duplicate_nip5_name_as_an_invalid_request() {
 }
 
 #[tokio::test]
+async fn releases_an_unpaid_nip5_name_when_the_request_closes() {
+    let (_directory, database) = database().await;
+    let repository = Repository::new(database);
+    let created = repository
+        .create_unified_request(
+            &request(b"first"),
+            &invoice(),
+            &on_chain("bcrt1qfirst"),
+            Some(&NewNip5 {
+                name: "alice",
+                public_key: "key",
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(repository.nip5_name_exists("alice").await.unwrap());
+    assert!(repository.close_request(created.request.id).await.unwrap());
+    assert!(!repository.nip5_name_exists("alice").await.unwrap());
+
+    let second = NewInvoice {
+        payment_hash: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        bolt11: "lnbcrt1second",
+        ..invoice()
+    };
+    repository
+        .create_unified_request(
+            &request(b"second"),
+            &second,
+            &on_chain("bcrt1qsecond"),
+            Some(&NewNip5 {
+                name: "alice",
+                public_key: "other",
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(repository.nip5_name_exists("alice").await.unwrap());
+}
+
+#[tokio::test]
 async fn finds_unpublished_zaps_by_payment_hash() {
     let (_directory, database) = database().await;
     let repository = Repository::new(database);

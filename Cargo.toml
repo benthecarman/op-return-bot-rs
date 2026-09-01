@@ -1,0 +1,56 @@
+[package]
+name = "op-return-bot"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.94"
+description = "Publish paid messages in Bitcoin OP_RETURN outputs"
+license = "MIT"
+repository = "https://github.com/benthecarman/OP-RETURN-Bot"
+
+[dependencies]
+anyhow = "1.0"
+askama = "0.16"
+async-trait = "0.1"
+axum = { version = "0.8", features = ["form", "json", "macros", "query"] }
+bitcoin = { version = "0.32", features = ["serde"] }
+clap = { version = "4.5", features = ["derive"] }
+dirs = "6"
+futures-util = "0.3"
+hex = "0.4"
+http = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+ldk-server-client = { git = "https://github.com/lightningdevkit/ldk-server.git", rev = "4010a2f792aaeabbf239820de56389f2bbc8ccb3", features = ["serde"] }
+nostr-sdk = "0.45.2"
+qrcode = "0.14"
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls", "stream"] }
+reqwest-oauth1 = { version = "0.3", default-features = false, features = ["json"] }
+reqwest12 = { package = "reqwest", version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rustls = "0.23"
+rmcp = { version = "3.2", default-features = false, features = ["macros", "schemars", "server", "transport-streamable-http-server"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_urlencoded = "0.7"
+sha2 = "0.10"
+sqlx = { version = "0.9", features = ["derive", "migrate", "runtime-tokio", "sqlite"] }
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = "0.7"
+toml = "0.9"
+fedimint-tonic-lnd = { version = "0.4", default-features = false, features = ["lightningrpc", "invoicesrpc"] }
+tower-http = { version = "0.6", features = ["catch-panic", "cors", "fs", "limit", "request-id", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+url = { version = "2.5", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"

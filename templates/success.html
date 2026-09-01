@@ -1,0 +1,3 @@
+{% extends "base.html" %}
+{% block title %}Success{% endblock %}
+{% block content %}<h1>Success!</h1>{% if warning %}<pre>Your OP_RETURN is very large and is considered non-standard. It may not show up on block explorers until it is mined</pre>{% endif %}<p>Transaction ID:</p><label><a href="https://mempool.space/tx/{{ txid }}">{{ txid }}</a></label>{% endblock %}

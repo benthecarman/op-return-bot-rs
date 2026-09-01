@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Nostr NIP-05{% endblock %}
+{% block content %}
+{% if !error.is_empty() %}<div class="text-danger">{{ error }}</div>{% endif %}
+<h2>Nostr NIP-05</h2>
+<p>NIP-05 is a human-readable identifier for your nostr public key. It makes finding and identifying your account on nostr easier. A NIP-05 ID also gives you a purple checkmark on most clients!</p>
+<p>OP_RETURN Bot will create this for you and etch it into the bitcoin blockchain forever.</p><p>You can then have a NIP-05 ID for your nostr account like bob@opreturnbot.com.</p><hr>
+<h3>Create NIP-05</h3><div class="jumbotron"><div class="row"><div class="col-md-4"></div><div class="col-md-4">
+<form method="post" action="/createNip5Request"><div class="form-group"><label for="name">Name:</label><input maxlength="10" minlength="1" type="text" class="form-control" placeholder="Your username" name="name" id="name" value="{{ name }}"></div><div class="form-group"><label for="pubkey">Public Key:</label><input minlength="1" type="text" class="form-control" placeholder="npub1..." name="pubkey" id="pubkey" value="{{ pubkey }}"></div><br><br><button style="float:right" type="submit" class="btn btn-primary">Create Invoice</button></form>
+</div><div class="col-md-4"></div></div></div><br><br>
+{% endblock %}

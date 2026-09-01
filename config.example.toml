@@ -1,0 +1,65 @@
+[server]
+address = "127.0.0.1"
+port = 9000
+public_url = "https://opreturnbot.com"
+onion_url = "http://opreturnqfd4qdv745xy6ncwvogbtxddttqkqkp5gipby6uytzpxwzqd.onion"
+
+[database]
+path = "~/.op-return-bot/invoices.sqlite"
+max_connections = 4
+busy_timeout_seconds = 30
+
+[bitcoin]
+network = "mainnet"
+rpc_url = "http://127.0.0.1:8332"
+rpc_user = "opreturnbot"
+rpc_password_file = "/run/credentials/op-return-bot/bitcoin-rpc-password"
+sending_wallet_name = "sending"
+receiving_wallet_name = "receiving"
+wallet_notify_key_file = "/run/credentials/op-return-bot/wallet-notify-key"
+
+[lightning]
+backend = "lnd"
+
+[lightning.lnd]
+rpc_url = "https://127.0.0.1:10009"
+macaroon_file = "/run/credentials/op-return-bot/lnd-admin.macaroon"
+tls_cert_file = "/run/credentials/op-return-bot/lnd-tls.cert"
+
+[lightning.ldk_server]
+rpc_url = "https://127.0.0.1:3002"
+config_file = "/var/lib/ldk-server/config.toml"
+
+[nostr]
+private_key_file = "/run/credentials/op-return-bot/nostr-nsec"
+relays = ["wss://relay.damus.io", "wss://nos.lol"]
+
+[twitter]
+enabled = false
+consumer_key_file = "/run/credentials/op-return-bot/twitter-consumer-key"
+consumer_secret_file = "/run/credentials/op-return-bot/twitter-consumer-secret"
+access_token_file = "/run/credentials/op-return-bot/twitter-access-token"
+access_secret_file = "/run/credentials/op-return-bot/twitter-access-secret"
+banned_words = []
+
+[telegram]
+enabled = false
+token_file = "/run/credentials/op-return-bot/telegram-token"
+admin_chat_id = 0
+
+[payments]
+message_max_bytes = 99000
+application_fee_sats = 1337
+private_fee_sats = 1000
+non_standard_fee_sats = 1000
+invoice_expiry_seconds = 300
+on_chain_expiry_seconds = 604800
+reconcile_interval_seconds = 15
+lightning_poll_seconds = 2
+
+[external]
+mempool_url = "https://mempool.space"
+bitcoiner_live_url = "https://bitcoiner.live"
+coinbase_url = "https://api.coinbase.com"
+esplora_url = "https://mempool.space/api/"
+slipstream_url = "https://slipstream.mara.com/api/transactions"

@@ -1,0 +1,8 @@
+/target
+/result
+/.direnv
+/.env
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.log

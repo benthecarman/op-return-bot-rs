@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Invoice{% endblock %}
+{% block content %}
+<script src="/assets/javascripts/checkInvoice.js"></script><script>const rhash = "{{ payment_hash }}"; setInterval(queryAPI, 1000, rhash);</script>
+<h1>Invoice</h1><h3>Message: {{ message }}</h3><h4>SHA256: {{ message_hash }}</h4>
+<img id="barcode" src="/qr?string={{ qr_string|urlencode }}&width=300&height=300" alt="" title="invoice" width="300" height="300"><br>
+<code>{{ payment_string }}</code><br>
+{% if !unified %}<form method="get" action="/invoice"><input type="text" name="invoice" hidden value="{{ invoice }}"><input type="submit" value="Paid"></form>{% endif %}
+{% endblock %}

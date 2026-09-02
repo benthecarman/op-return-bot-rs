@@ -1,0 +1,45 @@
+.private-help {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  padding: 0;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  color: inherit;
+  background: transparent;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: middle;
+  cursor: help;
+}
+
+.private-help::after {
+  position: absolute;
+  z-index: 1;
+  right: 0;
+  bottom: calc(100% + 0.5rem);
+  width: max-content;
+  max-width: min(16rem, 80vw);
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.25rem;
+  color: #fff;
+  background: #000;
+  content: attr(data-tooltip);
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.25;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+  visibility: hidden;
+}
+
+.private-help:hover::after,
+.private-help:focus::after {
+  opacity: 1;
+  visibility: visible;
+}

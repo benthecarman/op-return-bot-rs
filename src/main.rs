@@ -5,6 +5,7 @@ use op_return_bot::{
     AppConfig, AppState, Database, bitcoin_rpc::BitcoinClient, lightning,
     payment_service::PaymentService, repository::Repository, social::SocialPublisher, web,
 };
+use sd_notify::NotifyState;
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
@@ -64,6 +65,9 @@ async fn main() -> anyhow::Result<()> {
     let router = web::router(state);
     let listener = TcpListener::bind(bind_address).await?;
 
+    notify_systemd(&[NotifyState::Ready]);
+    spawn_watchdog();
+
     info!(%bind_address, "OP_RETURN Bot listening");
     axum::serve(
         listener,
@@ -81,7 +85,6 @@ async fn shutdown_signal() {
             .await
             .expect("failed to install Ctrl+C handler");
     };
-
     #[cfg(unix)]
     let terminate = async {
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -96,5 +99,32 @@ async fn shutdown_signal() {
     tokio::select! {
         () = ctrl_c => {},
         () = terminate => {},
+    }
+
+    notify_systemd(&[NotifyState::Stopping]);
+}
+
+/// Send a status message to the service manager.
+///
+/// Outside of systemd the notify socket does not exist and this is a no-op.
+fn notify_systemd(states: &[NotifyState<'_>]) {
+    if let Err(error) = sd_notify::notify(states) {
+        tracing::debug!(%error, "failed to notify the service manager");
+    }
+}
+
+/// Ping the systemd watchdog so a hung process gets restarted.
+///
+/// The watchdog only proves the tokio runtime stays responsive; it cannot
+/// detect a single stuck request handler.
+fn spawn_watchdog() {
+    if let Some(interval) = sd_notify::watchdog_enabled() {
+        tokio::spawn(async move {
+            let interval = interval / 2;
+            loop {
+                tokio::time::sleep(interval).await;
+                notify_systemd(&[NotifyState::Watchdog]);
+            }
+        });
     }
 }

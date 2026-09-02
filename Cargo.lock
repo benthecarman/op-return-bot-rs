@@ -2276,6 +2276,7 @@ dependencies = [
  "rmcp",
  "rustls 0.23.43",
  "schemars",
+ "sd-notify",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -3276,6 +3277,15 @@ checksum = "da046153aa2352493d6cb7da4b6e5c0c057d8a1d0a9aa8560baffdd945acd414"
 dependencies = [
  "ring",
  "untrusted",
+]
+
+[[package]]
+name = "sd-notify"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e4ef7359e694bfaf1dd27a30f9d760b54c00dfae9f19bd0c05a39bc9128fe76"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

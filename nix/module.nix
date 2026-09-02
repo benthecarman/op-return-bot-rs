@@ -31,10 +31,12 @@ in {
       description = "OP_RETURN Bot";
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" "bitcoind.service" "lnd.service" ];
-      wants = [ "network-online.target" ];
+      wants = [ "network-online.target" "bitcoind.service" "lnd.service" ];
       serviceConfig = {
         User = "op-return-bot";
         Group = "op-return-bot";
+        Type = "notify";
+        WatchdogSec = "30s";
         StateDirectory = "op-return-bot";
         WorkingDirectory = "${cfg.package}/share/op-return-bot";
         ExecStart = "${lib.getExe' cfg.package "op-return-bot"} --config ${cfg.configFile}";
@@ -44,10 +46,17 @@ in {
         NoNewPrivileges = true;
         PrivateTmp = true;
         PrivateDevices = true;
+        PrivateMounts = true;
+        PrivateIPC = true;
+        RemoveIPC = true;
+        KeyringMode = "private";
         ProtectHome = true;
         ProtectSystem = "strict";
+        ProtectProc = "invisible";
+        ProcSubset = "pid";
         ProtectKernelTunables = true;
         ProtectKernelModules = true;
+        ProtectKernelLogs = true;
         ProtectControlGroups = true;
         ProtectClock = true;
         ProtectHostname = true;
@@ -61,6 +70,7 @@ in {
         SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];
         CapabilityBoundingSet = "";
         AmbientCapabilities = "";
+        LimitNOFILE = 65536;
         UMask = "0077";
         ReadWritePaths = [ "/var/lib/op-return-bot" ];
       };

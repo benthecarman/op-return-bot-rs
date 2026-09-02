@@ -88,8 +88,10 @@ pub trait Lightning: Send + Sync {
 
 pub async fn connect(config: &LightningConfig) -> AppResult<Arc<dyn Lightning>> {
     match config.backend {
-        LightningBackendKind::Lnd => Ok(Arc::new(LndLightning::connect(config).await?)),
-        LightningBackendKind::LdkServer => Ok(Arc::new(LdkServerLightning::connect(config).await?)),
+        LightningBackendKind::Lnd => Ok(Arc::new(LndLightning::connect(config.lnd()?).await?)),
+        LightningBackendKind::LdkServer => Ok(Arc::new(
+            LdkServerLightning::connect(config.ldk_server()?).await?,
+        )),
     }
 }
 
@@ -98,8 +100,7 @@ struct LndLightning {
 }
 
 impl LndLightning {
-    async fn connect(config: &LightningConfig) -> AppResult<Self> {
-        let lnd = &config.lnd;
+    async fn connect(lnd: &crate::config::LndConfig) -> AppResult<Self> {
         let client = fedimint_tonic_lnd::connect(
             lnd.rpc_url.as_str().to_owned(),
             lnd.tls_cert_file.clone(),
@@ -291,8 +292,7 @@ struct LdkServerLightning {
 }
 
 impl LdkServerLightning {
-    async fn connect(config: &LightningConfig) -> AppResult<Self> {
-        let ldk = &config.ldk_server;
+    async fn connect(ldk: &crate::config::LdkServerConfig) -> AppResult<Self> {
         let path = ldk.config_file.clone();
         let loaded = load_config(&path).map_err(AppError::Config)?;
         let endpoint = ldk_endpoint(&ldk.rpc_url)?;

@@ -131,4 +131,5 @@ The backend is selectable per deployment. Existing invoices record the backend
 that created them. Before a switch from LND to ldk-server, let active LND
 invoices expire or settle. Keep the LND data and credentials until all old
 payments are reconciled. Then set `lightning.backend = "ldk-server"`, verify on
-regtest, and deploy.
+regtest, replace the `lightning.lnd` section with a `lightning.ldk_server`
+section, and deploy. Only the section for the selected backend is required.

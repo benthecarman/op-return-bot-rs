@@ -26,9 +26,10 @@ rpc_url = "https://127.0.0.1:10009"
 macaroon_file = "/run/credentials/op-return-bot/lnd-invoice.macaroon"
 tls_cert_file = "/run/credentials/op-return-bot/lnd-tls.cert"
 
-[lightning.ldk_server]
-rpc_url = "https://127.0.0.1:3002"
-config_file = "/var/lib/ldk-server/config.toml"
+# To use ldk-server, change the backend and replace the LND section with:
+# [lightning.ldk_server]
+# rpc_url = "https://127.0.0.1:3002"
+# config_file = "/var/lib/ldk-server/config.toml"
 
 [nostr]
 private_key_file = "/run/credentials/op-return-bot/nostr-nsec"

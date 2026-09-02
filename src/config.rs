@@ -72,6 +72,7 @@ impl AppConfig {
                 "nostr.relays must not be empty when Nostr is enabled".to_owned(),
             ));
         }
+        self.lightning.validate()?;
         Ok(())
     }
 }
@@ -155,8 +156,36 @@ where
 #[serde(deny_unknown_fields)]
 pub struct LightningConfig {
     pub backend: LightningBackendKind,
-    pub lnd: LndConfig,
-    pub ldk_server: LdkServerConfig,
+    pub lnd: Option<LndConfig>,
+    pub ldk_server: Option<LdkServerConfig>,
+}
+
+impl LightningConfig {
+    fn validate(&self) -> AppResult<()> {
+        match self.backend {
+            LightningBackendKind::Lnd => {
+                self.lnd()?;
+            }
+            LightningBackendKind::LdkServer => {
+                self.ldk_server()?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn lnd(&self) -> AppResult<&LndConfig> {
+        self.lnd.as_ref().ok_or_else(|| {
+            AppError::Config("lightning.lnd is required when backend is 'lnd'".to_owned())
+        })
+    }
+
+    pub(crate) fn ldk_server(&self) -> AppResult<&LdkServerConfig> {
+        self.ldk_server.as_ref().ok_or_else(|| {
+            AppError::Config(
+                "lightning.ldk_server is required when backend is 'ldk-server'".to_owned(),
+            )
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -293,10 +322,6 @@ backend = "lnd"
 rpc_url = "https://127.0.0.1:10009"
 macaroon_file = "/run/secrets/macaroon"
 tls_cert_file = "/run/secrets/tls.cert"
-
-[lightning.ldk_server]
-rpc_url = "https://127.0.0.1:3002"
-config_file = "/tmp/ldk-server.toml"
 "#
     }
 
@@ -308,7 +333,48 @@ config_file = "/tmp/ldk-server.toml"
         assert_eq!(config.server.address, IpAddr::from([127, 0, 0, 1]));
         assert_eq!(config.bitcoin.network, Network::Regtest);
         assert_eq!(config.lightning.backend, LightningBackendKind::Lnd);
+        assert!(config.lightning.lnd.is_some());
+        assert!(config.lightning.ldk_server.is_none());
         assert_eq!(config.payments.message_max_bytes, 99_000);
+    }
+
+    #[test]
+    fn parses_ldk_server_without_lnd() {
+        let text = valid_config()
+            .replace("backend = \"lnd\"", "backend = \"ldk-server\"")
+            .replace(
+                r#"[lightning.lnd]
+rpc_url = "https://127.0.0.1:10009"
+macaroon_file = "/run/secrets/macaroon"
+tls_cert_file = "/run/secrets/tls.cert""#,
+                r#"[lightning.ldk_server]
+rpc_url = "https://127.0.0.1:3002"
+config_file = "/tmp/ldk-server.toml""#,
+            );
+        let config: AppConfig = toml::from_str(&text).unwrap();
+        config.validate().unwrap();
+
+        assert_eq!(config.lightning.backend, LightningBackendKind::LdkServer);
+        assert!(config.lightning.lnd.is_none());
+        assert!(config.lightning.ldk_server.is_some());
+    }
+
+    #[test]
+    fn rejects_missing_selected_lightning_backend() {
+        let text = valid_config().replace(
+            r#"[lightning.lnd]
+rpc_url = "https://127.0.0.1:10009"
+macaroon_file = "/run/secrets/macaroon"
+tls_cert_file = "/run/secrets/tls.cert""#,
+            "",
+        );
+        let config: AppConfig = toml::from_str(&text).unwrap();
+
+        let error = config.validate().unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "configuration error: lightning.lnd is required when backend is 'lnd'"
+        );
     }
 
     #[test]

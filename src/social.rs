@@ -370,7 +370,7 @@ fn zap_request_relays(request: &Event) -> Vec<RelayUrl> {
 }
 
 /// Accepts only public `wss://` relays. A zap receipt must not open
-/// WebSockets to loopback, link-local, or other private hosts.
+/// `WebSockets` to loopback, link-local, or other private hosts.
 fn public_zap_relay(url: &str) -> Option<RelayUrl> {
     let parsed = url::Url::parse(url).ok()?;
     if parsed.scheme() != "wss" {
@@ -389,7 +389,9 @@ fn host_is_public(host: &url::Host<&str>) -> bool {
             let domain = domain.trim_end_matches('.');
             !domain.eq_ignore_ascii_case("localhost")
                 && !domain.ends_with(".localhost")
-                && !domain.ends_with(".local")
+                && !std::path::Path::new(domain)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("local"))
                 && !domain.ends_with(".internal")
         }
         url::Host::Ipv4(ip) => {

@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
     let creates = std::sync::Arc::new(op_return_bot::rate_limit::RateLimiter::new(
         config.payments.create_per_ip_per_minute,
         config.payments.create_global_per_minute,
-        std::time::Duration::from_secs(60),
+        std::time::Duration::from_mins(1),
     ));
     let payments = PaymentService::new(
         config.clone(),

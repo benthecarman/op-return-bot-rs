@@ -4,7 +4,7 @@ let
 in {
   options.services.op-return-bot = {
     enable = lib.mkEnableOption "OP_RETURN Bot";
-    package = lib.mkPackageOption self.packages.${pkgs.system} "op-return-bot" { };
+    package = lib.mkPackageOption self.packages.${pkgs.stdenv.hostPlatform.system} "op-return-bot" { };
     configFile = lib.mkOption {
       type = lib.types.path;
       description = "Path to the OP_RETURN Bot TOML configuration.";
@@ -37,7 +37,7 @@ in {
         Group = "op-return-bot";
         StateDirectory = "op-return-bot";
         WorkingDirectory = "${cfg.package}/share/op-return-bot";
-        ExecStart = "${lib.getExe cfg.package} --config ${cfg.configFile}";
+        ExecStart = "${lib.getExe' cfg.package "op-return-bot"} --config ${cfg.configFile}";
         LoadCredential = lib.mapAttrsToList (name: path: "${name}:${path}") cfg.credentials;
         Restart = "on-failure";
         RestartSec = "5s";

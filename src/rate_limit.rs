@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn rejects_the_call_after_the_per_key_limit() {
-        let limiter = RateLimiter::new(2, 10, Duration::from_secs(60));
+        let limiter = RateLimiter::new(2, 10, Duration::from_mins(1));
         assert!(limiter.check("ip:1").is_ok());
         assert!(limiter.check("ip:1").is_ok());
         assert!(matches!(limiter.check("ip:1"), Err(AppError::RateLimited)));
@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn rejects_the_call_after_the_global_limit() {
-        let limiter = RateLimiter::new(10, 2, Duration::from_secs(60));
+        let limiter = RateLimiter::new(10, 2, Duration::from_mins(1));
         assert!(limiter.check("ip:1").is_ok());
         assert!(limiter.check("ip:2").is_ok());
         assert!(matches!(limiter.check("ip:3"), Err(AppError::RateLimited)));
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn treats_a_zero_limit_as_disabled() {
-        let limiter = RateLimiter::new(0, 1, Duration::from_secs(60));
+        let limiter = RateLimiter::new(0, 1, Duration::from_mins(1));
         assert!(limiter.check("ip:1").is_ok());
         assert!(limiter.check("ip:1").is_ok());
     }

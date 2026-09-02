@@ -33,7 +33,10 @@
           '';
         });
       in {
-        packages.default = package;
+        packages = {
+          op-return-bot = package;
+          default = package;
+        };
         apps.default = {
           type = "app";
           program = "${package}/bin/op-return-bot";

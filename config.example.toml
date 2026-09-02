@@ -13,18 +13,18 @@ busy_timeout_seconds = 30
 network = "mainnet"
 rpc_url = "http://127.0.0.1:8332"
 rpc_user = "opreturnbot"
-rpc_password_file = "/run/credentials/op-return-bot/bitcoin-rpc-password"
+rpc_password_file = "/run/credentials/op-return-bot.service/bitcoin-rpc-password"
 sending_wallet_name = "sending"
 receiving_wallet_name = "receiving"
-wallet_notify_key_file = "/run/credentials/op-return-bot/wallet-notify-key"
+wallet_notify_key_file = "/run/credentials/op-return-bot.service/wallet-notify-key"
 
 [lightning]
 backend = "lnd"
 
 [lightning.lnd]
 rpc_url = "https://127.0.0.1:10009"
-macaroon_file = "/run/credentials/op-return-bot/lnd-invoice.macaroon"
-tls_cert_file = "/run/credentials/op-return-bot/lnd-tls.cert"
+macaroon_file = "/run/credentials/op-return-bot.service/lnd-invoice.macaroon"
+tls_cert_file = "/run/credentials/op-return-bot.service/lnd-tls.cert"
 
 # To use ldk-server, change the backend and replace the LND section with:
 # [lightning.ldk_server]
@@ -32,20 +32,20 @@ tls_cert_file = "/run/credentials/op-return-bot/lnd-tls.cert"
 # config_file = "/var/lib/ldk-server/config.toml"
 
 [nostr]
-private_key_file = "/run/credentials/op-return-bot/nostr-nsec"
+private_key_file = "/run/credentials/op-return-bot.service/nostr-nsec"
 relays = ["wss://relay.damus.io", "wss://nos.lol"]
 
 [twitter]
 enabled = false
-consumer_key_file = "/run/credentials/op-return-bot/twitter-consumer-key"
-consumer_secret_file = "/run/credentials/op-return-bot/twitter-consumer-secret"
-access_token_file = "/run/credentials/op-return-bot/twitter-access-token"
-access_secret_file = "/run/credentials/op-return-bot/twitter-access-secret"
+consumer_key_file = "/run/credentials/op-return-bot.service/twitter-consumer-key"
+consumer_secret_file = "/run/credentials/op-return-bot.service/twitter-consumer-secret"
+access_token_file = "/run/credentials/op-return-bot.service/twitter-access-token"
+access_secret_file = "/run/credentials/op-return-bot.service/twitter-access-secret"
 banned_words = []
 
 [telegram]
 enabled = false
-token_file = "/run/credentials/op-return-bot/telegram-token"
+token_file = "/run/credentials/op-return-bot.service/telegram-token"
 admin_chat_id = 0
 
 [payments]

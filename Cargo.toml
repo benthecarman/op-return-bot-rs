@@ -19,7 +19,7 @@ futures-util = "0.3"
 hex = "0.4"
 http = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
-ldk-server-client = { git = "https://github.com/lightningdevkit/ldk-server.git", rev = "4010a2f792aaeabbf239820de56389f2bbc8ccb3", features = ["serde"] }
+ldk-server-client = { git = "https://github.com/lightningdevkit/ldk-server.git", rev = "21a903ccb89496285c58a55ffdce42a9f0353a05", features = ["serde"] }
 nostr-sdk = "0.45.2"
 qrcode = "0.14"
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls", "stream"] }

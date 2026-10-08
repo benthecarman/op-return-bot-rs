@@ -5,7 +5,7 @@ use fedimint_tonic_lnd::{invoicesrpc, lnrpc, tonic};
 use futures_util::{Stream, StreamExt, stream};
 use ldk_server_client::{
     client::LdkServerClient,
-    config::{load_config, resolve_api_key, resolve_base_url, resolve_cert_path},
+    config::{load_config, resolve_base_url, resolve_cert_path, resolve_macaroon},
     ldk_server_grpc::{
         api::{Bolt11ReceiveRequest, GetNodeInfoRequest, GetPaymentDetailsRequest},
         events::{EventEnvelope, event_envelope},
@@ -297,8 +297,9 @@ impl LdkServerLightning {
         let loaded = load_config(&path).map_err(AppError::Config)?;
         let endpoint = ldk_endpoint(&ldk.rpc_url)?;
         let base_url = resolve_base_url(Some(endpoint), Some(&loaded));
-        let api_key = resolve_api_key(None, Some(&loaded))
-            .ok_or_else(|| AppError::Config("could not find the ldk-server API key".to_owned()))?;
+        let macaroon = resolve_macaroon(None, Some(&loaded))
+            .map_err(AppError::Config)?
+            .ok_or_else(|| AppError::Config("could not find the ldk-server macaroon".to_owned()))?;
         let cert_path = resolve_cert_path(None, Some(&loaded)).ok_or_else(|| {
             AppError::Config("could not find the ldk-server TLS certificate".to_owned())
         })?;
@@ -308,7 +309,7 @@ impl LdkServerLightning {
                 cert_path.display()
             ))
         })?;
-        let client = LdkServerClient::new(base_url, api_key, &cert).map_err(|error| {
+        let client = LdkServerClient::new(base_url, macaroon, &cert).map_err(|error| {
             AppError::Upstream(format!("could not connect to ldk-server: {error}"))
         })?;
         Ok(Self { client })

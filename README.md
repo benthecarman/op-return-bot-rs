@@ -10,6 +10,22 @@ The Rust service keeps the deployed routes, HTML flow, transaction shape,
 pricing rules, wallet split, and legacy SQLite encodings. It supports Bitcoin
 mainnet and regtest. Lightning can use LND or ldk-server.
 
+## ldk-server macaroon
+
+By default, the ldk-server backend uses ldk-server's admin macaroon. To give
+the bot only the access it needs, create a macaroon for it on the ldk-server
+host:
+
+```shell
+ldk-server-cli create-macaroon op-return-bot \
+  --permissions invoices:create node:read payments:read events:read \
+  | jq -r .token > ldk-server.macaroon
+```
+
+Then set `macaroon_file` in `[lightning.ldk_server]` to the path of that
+file. On NixOS, load the file with `services.op-return-bot.credentials` and
+use the path under `/run/credentials/op-return-bot.service/`.
+
 ## Development
 
 Copy `config.example.toml` to `op-return-bot.toml`, then run:

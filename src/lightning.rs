@@ -297,7 +297,22 @@ impl LdkServerLightning {
         let loaded = load_config(&path).map_err(AppError::Config)?;
         let endpoint = ldk_endpoint(&ldk.rpc_url)?;
         let base_url = resolve_base_url(Some(endpoint), Some(&loaded));
-        let macaroon = resolve_macaroon(None, Some(&loaded))
+        let macaroon_override = match &ldk.macaroon_file {
+            Some(path) => Some(
+                tokio::fs::read_to_string(path)
+                    .await
+                    .map_err(|error| {
+                        AppError::Config(format!(
+                            "could not read ldk-server macaroon {}: {error}",
+                            path.display()
+                        ))
+                    })?
+                    .trim()
+                    .to_owned(),
+            ),
+            None => None,
+        };
+        let macaroon = resolve_macaroon(macaroon_override, Some(&loaded))
             .map_err(AppError::Config)?
             .ok_or_else(|| AppError::Config("could not find the ldk-server macaroon".to_owned()))?;
         let cert_path = resolve_cert_path(None, Some(&loaded)).ok_or_else(|| {

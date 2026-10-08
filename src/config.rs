@@ -208,6 +208,10 @@ pub struct LndConfig {
 pub struct LdkServerConfig {
     pub rpc_url: Url,
     pub config_file: PathBuf,
+    /// A macaroon to use instead of the admin macaroon from the ldk-server
+    /// data directory.
+    #[serde(default)]
+    pub macaroon_file: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -356,7 +360,27 @@ config_file = "/tmp/ldk-server.toml""#,
 
         assert_eq!(config.lightning.backend, LightningBackendKind::LdkServer);
         assert!(config.lightning.lnd.is_none());
-        assert!(config.lightning.ldk_server.is_some());
+        let ldk_server = config.lightning.ldk_server.unwrap();
+        assert!(ldk_server.macaroon_file.is_none());
+    }
+
+    #[test]
+    fn parses_ldk_server_macaroon_file() {
+        let text = valid_config().replace(
+            "[lightning.lnd]",
+            r#"[lightning.ldk_server]
+rpc_url = "https://127.0.0.1:3002"
+config_file = "/tmp/ldk-server.toml"
+macaroon_file = "/run/secrets/ldk-server.macaroon"
+
+[lightning.lnd]"#,
+        );
+        let config: AppConfig = toml::from_str(&text).unwrap();
+
+        assert_eq!(
+            config.lightning.ldk_server.unwrap().macaroon_file,
+            Some(PathBuf::from("/run/secrets/ldk-server.macaroon"))
+        );
     }
 
     #[test]

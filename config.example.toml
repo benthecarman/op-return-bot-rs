@@ -30,11 +30,13 @@ tls_cert_file = "/run/credentials/op-return-bot.service/lnd-tls.cert"
 # [lightning.ldk_server]
 # rpc_url = "https://127.0.0.1:3002"
 # config_file = "/var/lib/ldk-server/config.toml"
+# macaroon_file = "/run/credentials/op-return-bot.service/ldk-server.macaroon"
 #
-# The bot reads the admin macaroon from
+# macaroon_file is optional. Use a macaroon that can only create and look up
+# invoices and read events and node info. If you leave it out, the bot reads
+# the admin macaroon from
 # <storage.disk.dir_path>/<network>/macaroons/admin.macaroon, where both
-# values come from the ldk-server config file. The bot needs read access to
-# that file.
+# values come from the ldk-server config file.
 
 [nostr]
 private_key_file = "/run/credentials/op-return-bot.service/nostr-nsec"

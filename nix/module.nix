@@ -15,6 +15,7 @@ in {
       example = {
         bitcoin-rpc-password = "/run/secrets/bitcoin-rpc-password";
         wallet-notify-key = "/run/secrets/wallet-notify-key";
+        "ldk-server.macaroon" = "/run/secrets/ldk-server.macaroon";
       };
       description = "Systemd credentials made available to the service.";
     };
@@ -30,8 +31,8 @@ in {
     systemd.services.op-return-bot = {
       description = "OP_RETURN Bot";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network-online.target" "bitcoind.service" "lnd.service" ];
-      wants = [ "network-online.target" "bitcoind.service" "lnd.service" ];
+      after = [ "network-online.target" "bitcoind.service" "lnd.service" "ldk-server.service" ];
+      wants = [ "network-online.target" "bitcoind.service" "lnd.service" "ldk-server.service" ];
       serviceConfig = {
         User = "op-return-bot";
         Group = "op-return-bot";

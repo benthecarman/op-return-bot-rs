@@ -30,6 +30,11 @@ tls_cert_file = "/run/credentials/op-return-bot.service/lnd-tls.cert"
 # [lightning.ldk_server]
 # rpc_url = "https://127.0.0.1:3002"
 # config_file = "/var/lib/ldk-server/config.toml"
+#
+# The bot reads the admin macaroon from
+# <storage.disk.dir_path>/<network>/macaroons/admin.macaroon, where both
+# values come from the ldk-server config file. The bot needs read access to
+# that file.
 
 [nostr]
 private_key_file = "/run/credentials/op-return-bot.service/nostr-nsec"

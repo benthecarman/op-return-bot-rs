@@ -61,7 +61,5 @@ nix flake check
 nix build .#
 ```
 
-See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the staged rollout, database
-backup, wallet notification setup, checks, and rollback procedure.
 See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for the preserved production
 contract and the intentional bug fixes.

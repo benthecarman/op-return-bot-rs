@@ -58,7 +58,8 @@ footer svg { width: 20px; height: 20px; fill: currentColor; }
 .page.center > .card { width: 100%; }
 label.field { display: block; font-size: 14px; color: var(--muted); margin: 0 0 6px; }
 .field + input, .field + textarea { margin-bottom: 14px; }
-input[type="text"], textarea { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; font: 15px/1.5 var(--mono); }
+input[type="text"], textarea { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; font: 17px/1.5 var(--sans); }
+input[type="text"]::placeholder, textarea::placeholder { color: #6b7096; }
 textarea { min-height: 150px; resize: vertical; }
 input[type="text"]:focus, textarea:focus { outline: none; border-color: var(--accent); }
 .meta { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 13px; margin-top: 6px; }

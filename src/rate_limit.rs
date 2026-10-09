@@ -88,10 +88,12 @@ fn allow(window: &mut Window, now: Instant, length: Duration, limit: u32) -> boo
 }
 
 /// Identifies the caller of a create request. Forwarding headers are only
-/// trusted from a loopback peer, the local reverse proxy; any other peer is
-/// keyed by its own address. From the proxy, the last `X-Forwarded-For` hop
-/// is used because the proxy appended it. Earlier hops come from the client
-/// and can be forged. `X-Real-IP` is used when there is no `X-Forwarded-For`.
+/// trusted from a loopback peer, the local Cloudflare tunnel or reverse
+/// proxy; any other peer is keyed by its own address. From the proxy,
+/// `CF-Connecting-IP` comes first because Cloudflare sets it to the single
+/// visitor address. Then the last `X-Forwarded-For` hop is used because the
+/// proxy appended it. Earlier hops come from the client and can be forged.
+/// `X-Real-IP` is used when neither header is present.
 #[must_use]
 pub fn caller_key(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
     let Some(peer) = peer else {
@@ -100,15 +102,23 @@ pub fn caller_key(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
     if !is_loopback(peer.ip()) {
         return format!("ip:{}", peer.ip());
     }
-    let forwarded = headers
-        .get_all("x-forwarded-for")
-        .iter()
-        .next_back()
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.rsplit(',').next())
-        .or_else(|| header_text(headers, "x-real-ip"))
-        .and_then(|value| value.trim().parse::<IpAddr>().ok());
+    let forwarded = header_ip(header_text(headers, "cf-connecting-ip"))
+        .or_else(|| {
+            header_ip(
+                headers
+                    .get_all("x-forwarded-for")
+                    .iter()
+                    .next_back()
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.rsplit(',').next()),
+            )
+        })
+        .or_else(|| header_ip(header_text(headers, "x-real-ip")));
     format!("ip:{}", forwarded.unwrap_or_else(|| peer.ip()))
+}
+
+fn header_ip(value: Option<&str>) -> Option<IpAddr> {
+    value.and_then(|value| value.trim().parse().ok())
 }
 
 #[must_use]
@@ -188,10 +198,21 @@ mod tests {
     }
 
     #[test]
+    fn prefers_the_cloudflare_visitor_address() {
+        let peer = "127.0.0.1:9000".parse().unwrap();
+        let mut headers = forwarded(&["198.51.100.1, 203.0.113.8"]);
+        headers.insert("cf-connecting-ip", HeaderValue::from_static("203.0.113.7"));
+        assert_eq!(caller_key(&headers, Some(peer)), "ip:203.0.113.7");
+        headers.insert("cf-connecting-ip", HeaderValue::from_static("not-an-ip"));
+        assert_eq!(caller_key(&headers, Some(peer)), "ip:203.0.113.8");
+    }
+
+    #[test]
     fn ignores_forwarding_headers_from_remote_peers() {
         let peer = "192.0.2.4:50000".parse().unwrap();
         let mut headers = forwarded(&["203.0.113.8"]);
         headers.insert("x-real-ip", HeaderValue::from_static("203.0.113.9"));
+        headers.insert("cf-connecting-ip", HeaderValue::from_static("203.0.113.7"));
         assert_eq!(caller_key(&headers, Some(peer)), "ip:192.0.2.4");
     }
 

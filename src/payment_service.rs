@@ -1086,13 +1086,7 @@ impl PaymentService {
                 Ok((txid, false))
             }
             Err(error) if prepared.stored && is_missing_inputs_error(&error.to_string()) => {
-                self.repository
-                    .clear_signed_transaction(record.request.id)
-                    .await?;
-                Err(AppError::Upstream(format!(
-                    "stored transaction for request {} has missing inputs and will be rebuilt: {error}",
-                    record.request.id
-                )))
+                self.recover_missing_inputs(record, prepared, error).await
             }
             Err(core_error) => {
                 let message = core_error.to_string();
@@ -1125,6 +1119,48 @@ impl PaymentService {
                     tracing::warn!(%error, %outpoint, "could not lock the input of a Slipstream-only transaction");
                 }
                 Ok((prepared.transaction.compute_txid(), true))
+            }
+        }
+    }
+
+    /// Handles a stored transaction whose input is gone. The transaction
+    /// may still be live: Bitcoin Core can accept it before its reply is
+    /// lost, and the input then disappears when the transaction confirms
+    /// and its change is spent, or when it leaves the mempool with an
+    /// unconfirmed parent. A rebuild on another output would then pay a
+    /// second fee, so the request is only rebuilt when the funding wallet
+    /// never saw the transaction or a confirmed transaction conflicts
+    /// with it.
+    async fn recover_missing_inputs(
+        &self,
+        record: &PaymentRecord,
+        prepared: &PreparedTransaction,
+        error: AppError,
+    ) -> AppResult<(Txid, bool)> {
+        let request_id = record.request.id;
+        let txid = prepared.transaction.compute_txid();
+        let confirmations = self
+            .bitcoin
+            .wallet_confirmations(prepared.wallet, txid)
+            .await?;
+        match stored_transaction_state(confirmations) {
+            StoredTransactionState::Confirmed => {
+                tracing::warn!(
+                    request_id,
+                    %txid,
+                    "stored transaction is already confirmed; completing the request"
+                );
+                Ok((txid, false))
+            }
+            StoredTransactionState::Unconfirmed => Err(AppError::Upstream(format!(
+                "stored transaction {txid} for request {request_id} has missing inputs, \
+                 but the wallet still tracks it; not rebuilding: {error}"
+            ))),
+            StoredTransactionState::Dead => {
+                self.repository.clear_signed_transaction(request_id).await?;
+                Err(AppError::Upstream(format!(
+                    "stored transaction for request {request_id} has missing inputs and will be rebuilt: {error}"
+                )))
             }
         }
     }
@@ -1319,6 +1355,28 @@ fn profit(record: &PaymentRecord, fee_sats: u64) -> Option<i64> {
         })?;
     let fee = i64::try_from(fee_sats).ok()?;
     paid_sats.checked_sub(fee)
+}
+
+/// What the funding wallet knows about a stored transaction whose input
+/// Bitcoin Core reports as missing.
+#[derive(Debug, Eq, PartialEq)]
+enum StoredTransactionState {
+    /// The transaction is in a block, so the request is complete.
+    Confirmed,
+    /// The wallet tracks the transaction and can still rebroadcast it, so
+    /// a rebuild could confirm alongside it.
+    Unconfirmed,
+    /// The wallet never saw the transaction, or a confirmed transaction
+    /// conflicts with it. It can never confirm, so it is safe to rebuild.
+    Dead,
+}
+
+const fn stored_transaction_state(confirmations: Option<i64>) -> StoredTransactionState {
+    match confirmations {
+        Some(confirmations) if confirmations > 0 => StoredTransactionState::Confirmed,
+        Some(0) => StoredTransactionState::Unconfirmed,
+        Some(_) | None => StoredTransactionState::Dead,
+    }
 }
 
 fn clamp_fee_rate(rate: u64) -> AppResult<u64> {
@@ -1550,6 +1608,23 @@ mod tests {
         assert_eq!(clamp_fee_rate(1_000).unwrap(), 1_000);
         assert!(clamp_fee_rate(0).is_err());
         assert!(clamp_fee_rate(1_001).is_err());
+    }
+
+    #[test]
+    fn rebuilds_only_transactions_that_cannot_confirm() {
+        assert_eq!(
+            stored_transaction_state(Some(3)),
+            StoredTransactionState::Confirmed
+        );
+        assert_eq!(
+            stored_transaction_state(Some(0)),
+            StoredTransactionState::Unconfirmed
+        );
+        assert_eq!(
+            stored_transaction_state(Some(-2)),
+            StoredTransactionState::Dead
+        );
+        assert_eq!(stored_transaction_state(None), StoredTransactionState::Dead);
     }
 
     #[test]

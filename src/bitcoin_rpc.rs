@@ -471,6 +471,24 @@ impl BitcoinClient {
             })
     }
 
+    /// The confirmations of a transaction in `wallet`, or `None` when the
+    /// wallet has never seen it. Negative when the transaction conflicts
+    /// with a confirmed transaction.
+    pub async fn wallet_confirmations(&self, wallet: Wallet, txid: Txid) -> AppResult<Option<i64>> {
+        match self
+            .call::<WalletTransaction>(
+                Some(self.wallet_name(wallet)),
+                "gettransaction",
+                json!([txid.to_string(), true]),
+            )
+            .await
+        {
+            Ok(transaction) => Ok(Some(transaction.confirmations)),
+            Err(RpcFailure::Rpc { code, .. }) if code == RPC_INVALID_ADDRESS_OR_KEY => Ok(None),
+            Err(failure) => Err(failure.into()),
+        }
+    }
+
     /// Finds the payment output for one address in one transaction.
     pub async fn payment_output(
         &self,
@@ -751,6 +769,12 @@ mod tests {
         let method = request["method"].as_str().unwrap_or_default().to_owned();
         let wallet = wallet.map(|Path(name)| name).unwrap_or_default();
         state.calls.lock().unwrap().push((wallet, method.clone()));
+        if method == "gettransaction" && request["params"][0] != PAYMENT_TXID {
+            return Json(json!({
+                "result": null,
+                "error": { "code": RPC_INVALID_ADDRESS_OR_KEY, "message": "Invalid or non-wallet transaction id" }
+            }));
+        }
         match fake_result(&state, &method, &request["params"]) {
             Some(result) => Json(json!({ "result": result, "error": null })),
             None => Json(
@@ -944,6 +968,26 @@ mod tests {
             .unwrap();
         assert_eq!(signed.transaction.vsize(), 1_125);
         assert_eq!(signed.fee_sats, 5 * 1_125);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local TCP sockets, which the Nix build sandbox blocks"]
+    async fn reports_whether_the_wallet_knows_a_transaction() {
+        let (_directory, client, _state) = fake_client().await;
+        assert_eq!(
+            client
+                .wallet_confirmations(Wallet::Receiving, Txid::from_str(PAYMENT_TXID).unwrap())
+                .await
+                .unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            client
+                .wallet_confirmations(Wallet::Sending, outpoint(0).txid)
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     #[tokio::test]

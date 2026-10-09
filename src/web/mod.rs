@@ -1,9 +1,4 @@
-use std::{
-    io::Cursor,
-    net::{IpAddr, SocketAddr},
-    str::FromStr,
-    sync::OnceLock,
-};
+use std::{io::Cursor, net::SocketAddr, str::FromStr, sync::OnceLock};
 
 use askama::Template;
 use axum::{
@@ -863,7 +858,7 @@ async fn wallet_notify(
     headers: HeaderMap,
     Json(event): Json<WalletNotifyEvent>,
 ) -> AppResult<Response> {
-    if !is_loopback(peer.ip()) {
+    if !rate_limit::is_loopback(peer.ip()) {
         return Ok((StatusCode::UNAUTHORIZED, "Unauthorized").into_response());
     }
     let expected = tokio::fs::read(&state.config.bitcoin.wallet_notify_key_file)
@@ -1189,15 +1184,6 @@ fn render(template: impl Template) -> AppResult<Html<String>> {
         .map_err(|error| AppError::Internal(format!("could not render page: {error}")))
 }
 
-fn is_loopback(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => ip.is_loopback(),
-        IpAddr::V6(ip) => {
-            ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback())
-        }
-    }
-}
-
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
@@ -1329,14 +1315,6 @@ mod tests {
         assert_eq!(qr_dimension(None), 300);
         assert_eq!(qr_dimension(Some("abc")), 300);
         assert_eq!(qr_dimension(Some(" 450 ")), 450);
-    }
-
-    #[test]
-    fn treats_only_loopback_as_local() {
-        assert!(is_loopback("127.0.0.1".parse().unwrap()));
-        assert!(is_loopback("::1".parse().unwrap()));
-        assert!(is_loopback("::ffff:127.0.0.1".parse().unwrap()));
-        assert!(!is_loopback("8.8.8.8".parse().unwrap()));
     }
 
     #[test]

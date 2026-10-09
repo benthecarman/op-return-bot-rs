@@ -8,7 +8,8 @@ Twitter, Telegram, MCP, and the existing SQLite database.
 
 The Rust service keeps the deployed routes, HTML flow, transaction shape,
 pricing rules, wallet split, and legacy SQLite encodings. It supports Bitcoin
-mainnet and regtest. Lightning can use LND or ldk-server.
+mainnet and regtest. Lightning payments go through ldk-server, with BOLT11
+invoices and BOLT12 offers.
 
 ## ldk-server macaroon
 

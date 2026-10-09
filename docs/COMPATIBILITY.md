@@ -33,7 +33,9 @@ the existing plain-text status responses are unchanged.
 - New requests are accepted while the mempool chain limit is active. The
   broadcast waits for the next block, as before. `/api/mempool-limit` reports
   the state.
-- New migrations add only backend, amount, zap, and service-state data.
+- New migrations add only backend, amount, zap, service-state, and BOLT12
+  offer data. Rows from the LND backend stay readable, but the service never
+  looks them up on a node.
 - The service uses separate Bitcoin Core sending and receiving wallets. It
   loads both wallets at startup when Bitcoin Core has not loaded them.
 - Receiving and change addresses are `bech32m`, as before.
@@ -41,14 +43,20 @@ the existing plain-text status responses are unchanged.
   transaction then spends the payment output from the receiving wallet, so a
   replaced payment also removes the OP_RETURN transaction. Requests paid by
   Lightning spend the sending wallet.
-- After an on-chain payment the service cancels the Lightning invoice of the
-  same request on LND. ldk-server cannot cancel invoices.
+- ldk-server cannot cancel invoices, so the Lightning invoice and BOLT12
+  offer of a request stay payable after an on-chain payment until they
+  expire.
+- Unified requests also get a fixed-amount BOLT12 offer that expires with the
+  invoice. A paid offer counts as a paid invoice. Offers are matched by offer
+  ID, because the payment hash only exists once a payer requests an invoice.
 - The `walletnotify` endpoint remains the main on-chain trigger. It replies
   at once and processes the transaction in the background, as before.
-- The service subscribes to invoice updates from both LND and ldk-server and
-  reconnects when a stream ends. It does not poll open Lightning invoices.
-  The ldk-server event stream is live-only, so `/processunhandled` remains the
-  manual recovery path for a payment received while the subscriber was down.
+- The service subscribes to ldk-server payment events and reconnects when the
+  stream ends. It does not poll open BOLT11 invoices. The event stream is
+  live-only, so `/processunhandled` remains the manual recovery path for a
+  BOLT11 payment received while the subscriber was down. Each reconciliation
+  pass lists recent ldk-server payments to find BOLT12 offer payments that the
+  stream missed, and does not close requests when that check fails.
   A 15-second reconciliation pass checks on-chain payments with one wallet
   call, retries paid requests, closes expired requests, and publishes zap
   receipts. The reconciliation interval is configurable.
@@ -60,8 +68,8 @@ the existing plain-text status responses are unchanged.
   which is seven days by default, as before.
   A request is never closed while its invoice is settled on the backend,
   while the backend cannot answer, or after a payment arrived.
-- LND is the default Lightning backend. ldk-server is selectable. The
-  LND credential is an invoice macaroon.
+- ldk-server is the only Lightning backend. LND support was removed. An old
+  `lightning.backend = "ldk-server"` setting is still accepted.
 
 ## Transaction and price rules
 

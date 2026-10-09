@@ -1,31 +1,46 @@
 use std::{pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
-use fedimint_tonic_lnd::{invoicesrpc, lnrpc, tonic};
 use futures_util::{Stream, StreamExt, stream};
 use ldk_server_client::{
     client::LdkServerClient,
     config::{load_config, resolve_base_url, resolve_cert_path, resolve_macaroon},
     ldk_server_grpc::{
-        api::{Bolt11ReceiveRequest, GetNodeInfoRequest, GetPaymentDetailsRequest},
+        api::{
+            Bolt11ReceiveRequest, Bolt12ReceiveRequest, GetNodeInfoRequest,
+            GetPaymentDetailsRequest, ListPaymentsRequest,
+        },
         events::{EventEnvelope, event_envelope},
         types::{
-            Bolt11InvoiceDescription, PaymentStatus, bolt11_invoice_description, payment_kind,
+            Bolt11InvoiceDescription, Payment, PaymentDirection, PaymentStatus,
+            bolt11_invoice_description, payment_kind,
         },
     },
 };
 
-use crate::{
-    AppError, AppResult,
-    config::{LightningBackendKind, LightningConfig},
-    domain::LightningBackend,
-};
+use crate::{AppError, AppResult, config::LightningConfig, domain::LightningBackend};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreatedInvoice {
     pub bolt11: String,
     pub payment_hash: String,
     pub backend: LightningBackend,
+}
+
+/// A fixed-amount BOLT12 offer for one request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreatedOffer {
+    pub offer: String,
+    pub offer_id: String,
+}
+
+/// A received payment for a BOLT12 offer. The payment hash is only known
+/// once the payer requests an invoice, so offers are matched by ID.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OfferPayment {
+    pub offer_id: String,
+    pub payment_hash: String,
+    pub amount_msats: u64,
 }
 
 /// The state of an invoice as reported by the Lightning backend.
@@ -49,6 +64,8 @@ pub enum InvoiceEvent {
         payment_hash: String,
         preimage: Vec<u8>,
     },
+    /// A BOLT12 offer was paid.
+    OfferPaid(OfferPayment),
 }
 
 pub type InvoiceStream = Pin<Box<dyn Stream<Item = AppResult<InvoiceEvent>> + Send>>;
@@ -69,17 +86,24 @@ pub trait Lightning: Send + Sync {
         expiry_seconds: u32,
     ) -> AppResult<CreatedInvoice>;
 
+    async fn create_offer(
+        &self,
+        amount_msats: u64,
+        description: &str,
+        expiry_seconds: u32,
+    ) -> AppResult<CreatedOffer>;
+
+    /// Lists successful BOLT12 offer payments last updated at or after
+    /// `since`, a Unix time in seconds.
+    async fn offer_payments_since(&self, since: u64) -> AppResult<Vec<OfferPayment>>;
+
     async fn block_height(&self) -> AppResult<u64>;
 
     async fn invoice_state(&self, payment_hash: &str) -> AppResult<InvoiceState>;
 
-    /// Streams invoices as they settle. The stream ends when the connection
-    /// drops, and the caller reconnects.
+    /// Streams invoices and offers as they are paid. The stream ends when the
+    /// connection drops, and the caller reconnects.
     async fn subscribe_invoices(&self) -> AppResult<InvoiceStream>;
-
-    /// Cancels an open invoice so that it can no longer be paid. Backends
-    /// that cannot cancel invoices return `Ok` and log the limitation.
-    async fn cancel_invoice(&self, payment_hash: &str) -> AppResult<()>;
 
     async fn node_uri(&self) -> AppResult<String>;
 
@@ -87,204 +111,9 @@ pub trait Lightning: Send + Sync {
 }
 
 pub async fn connect(config: &LightningConfig) -> AppResult<Arc<dyn Lightning>> {
-    match config.backend {
-        LightningBackendKind::Lnd => Ok(Arc::new(LndLightning::connect(config.lnd()?).await?)),
-        LightningBackendKind::LdkServer => Ok(Arc::new(
-            LdkServerLightning::connect(config.ldk_server()?).await?,
-        )),
-    }
-}
-
-struct LndLightning {
-    client: fedimint_tonic_lnd::Client,
-}
-
-impl LndLightning {
-    async fn connect(lnd: &crate::config::LndConfig) -> AppResult<Self> {
-        let client = fedimint_tonic_lnd::connect(
-            lnd.rpc_url.as_str().to_owned(),
-            lnd.tls_cert_file.clone(),
-            lnd.macaroon_file.clone(),
-        )
-        .await
-        .map_err(|error| AppError::Upstream(format!("could not connect to LND: {error}")))?;
-        Ok(Self { client })
-    }
-
-    async fn add_invoice(&self, invoice: lnrpc::Invoice) -> AppResult<CreatedInvoice> {
-        let response = self
-            .client
-            .clone()
-            .lightning()
-            .add_invoice(invoice)
-            .await
-            .map_err(|error| AppError::Upstream(format!("LND addinvoice failed: {error}")))?
-            .into_inner();
-        Ok(CreatedInvoice {
-            bolt11: response.payment_request,
-            payment_hash: hex::encode(response.r_hash),
-            backend: LightningBackend::Lnd,
-        })
-    }
-
-    async fn get_info(&self) -> AppResult<lnrpc::GetInfoResponse> {
-        Ok(self
-            .client
-            .clone()
-            .lightning()
-            .get_info(lnrpc::GetInfoRequest {})
-            .await
-            .map_err(|error| AppError::Upstream(format!("LND getinfo failed: {error}")))?
-            .into_inner())
-    }
-}
-
-fn decode_payment_hash(payment_hash: &str) -> AppResult<Vec<u8>> {
-    hex::decode(payment_hash).map_err(|error| {
-        AppError::InvalidRequest(format!("payment hash is not valid hex: {error}"))
-    })
-}
-
-/// Converts an LND invoice update into an event. Only invoices that settled
-/// for at least their value produce an event.
-fn settled_event(invoice: lnrpc::Invoice) -> Option<InvoiceEvent> {
-    if invoice.state != lnrpc::invoice::InvoiceState::Settled as i32 {
-        return None;
-    }
-    let payment_hash = hex::encode(&invoice.r_hash);
-    if invoice.amt_paid_msat < invoice.value_msat {
-        tracing::warn!(
-            payment_hash,
-            amt_paid_msat = invoice.amt_paid_msat,
-            value_msat = invoice.value_msat,
-            "invoice settled below its value; ignoring"
-        );
-        return None;
-    }
-    Some(InvoiceEvent::Settled {
-        payment_hash,
-        preimage: invoice.r_preimage,
-    })
-}
-
-#[async_trait]
-impl Lightning for LndLightning {
-    async fn create_invoice(
-        &self,
-        amount_msats: u64,
-        description: &str,
-        expiry_seconds: u32,
-    ) -> AppResult<CreatedInvoice> {
-        let value_msat = i64::try_from(amount_msats)
-            .map_err(|_| AppError::InvalidRequest("invoice amount is too large".to_owned()))?;
-        self.add_invoice(lnrpc::Invoice {
-            memo: description.to_owned(),
-            value_msat,
-            expiry: i64::from(expiry_seconds),
-            ..Default::default()
-        })
-        .await
-    }
-
-    async fn create_invoice_with_description_hash(
-        &self,
-        amount_msats: u64,
-        description_hash: [u8; 32],
-        expiry_seconds: u32,
-    ) -> AppResult<CreatedInvoice> {
-        let value_msat = i64::try_from(amount_msats)
-            .map_err(|_| AppError::InvalidRequest("invoice amount is too large".to_owned()))?;
-        self.add_invoice(lnrpc::Invoice {
-            description_hash: description_hash.to_vec(),
-            value_msat,
-            expiry: i64::from(expiry_seconds),
-            ..Default::default()
-        })
-        .await
-    }
-
-    async fn block_height(&self) -> AppResult<u64> {
-        Ok(u64::from(self.get_info().await?.block_height))
-    }
-
-    async fn invoice_state(&self, payment_hash: &str) -> AppResult<InvoiceState> {
-        let lookup = self
-            .client
-            .clone()
-            .lightning()
-            .lookup_invoice(lnrpc::PaymentHash {
-                r_hash: decode_payment_hash(payment_hash)?,
-                ..Default::default()
-            })
-            .await;
-        let response = match lookup {
-            Ok(response) => response.into_inner(),
-            // An invoice that LND does not know cannot be paid.
-            Err(status) if status.code() == tonic::Code::NotFound => {
-                return Ok(InvoiceState::Canceled);
-            }
-            Err(status) => {
-                return Err(AppError::Upstream(format!(
-                    "LND lookupinvoice failed: {status}"
-                )));
-            }
-        };
-        let state = if response.state == lnrpc::invoice::InvoiceState::Settled as i32 {
-            InvoiceState::Settled {
-                preimage: response.r_preimage,
-            }
-        } else if response.state == lnrpc::invoice::InvoiceState::Canceled as i32 {
-            InvoiceState::Canceled
-        } else {
-            InvoiceState::Open
-        };
-        Ok(state)
-    }
-
-    async fn subscribe_invoices(&self) -> AppResult<InvoiceStream> {
-        let updates = self
-            .client
-            .clone()
-            .lightning()
-            .subscribe_invoices(lnrpc::InvoiceSubscription {
-                add_index: 0,
-                settle_index: 0,
-            })
-            .await
-            .map_err(|error| AppError::Upstream(format!("LND subscribeinvoices failed: {error}")))?
-            .into_inner();
-        let events = updates.filter_map(|update| async move {
-            match update {
-                Ok(invoice) => settled_event(invoice).map(Ok),
-                Err(status) => Some(Err(AppError::Upstream(format!(
-                    "LND invoice stream failed: {status}"
-                )))),
-            }
-        });
-        Ok(Box::pin(events))
-    }
-
-    async fn cancel_invoice(&self, payment_hash: &str) -> AppResult<()> {
-        self.client
-            .clone()
-            .invoices()
-            .cancel_invoice(invoicesrpc::CancelInvoiceMsg {
-                payment_hash: decode_payment_hash(payment_hash)?,
-            })
-            .await
-            .map_err(|error| AppError::Upstream(format!("LND cancelinvoice failed: {error}")))?;
-        Ok(())
-    }
-
-    async fn node_uri(&self) -> AppResult<String> {
-        preferred_node_uri(self.get_info().await?.uris).ok_or_else(|| {
-            AppError::Upstream("LND does not advertise a public node URI".to_owned())
-        })
-    }
-
-    fn backend(&self) -> LightningBackend {
-        LightningBackend::Lnd
-    }
+    Ok(Arc::new(
+        LdkServerLightning::connect(&config.ldk_server).await?,
+    ))
 }
 
 struct LdkServerLightning {
@@ -394,6 +223,66 @@ impl Lightning for LdkServerLightning {
         .await
     }
 
+    async fn create_offer(
+        &self,
+        amount_msats: u64,
+        description: &str,
+        expiry_seconds: u32,
+    ) -> AppResult<CreatedOffer> {
+        let response = self
+            .client
+            .bolt12_receive(Bolt12ReceiveRequest {
+                description: description.to_owned(),
+                amount_msat: Some(amount_msats),
+                expiry_secs: Some(expiry_seconds),
+                quantity: None,
+            })
+            .await
+            .map_err(|error| {
+                AppError::Upstream(format!("ldk-server Bolt12Receive failed: {error}"))
+            })?;
+        Ok(CreatedOffer {
+            offer: response.offer,
+            offer_id: response.offer_id,
+        })
+    }
+
+    async fn offer_payments_since(&self, since: u64) -> AppResult<Vec<OfferPayment>> {
+        let mut found = Vec::new();
+        let mut page_token = None;
+        // ldk-server lists payments newest first, so stop at the first page
+        // that holds nothing as recent as `since`.
+        for _ in 0..MAX_PAYMENT_PAGES {
+            let response = self
+                .client
+                .list_payments(ListPaymentsRequest { page_token })
+                .await
+                .map_err(|error| {
+                    AppError::Upstream(format!("ldk-server ListPayments failed: {error}"))
+                })?;
+            let recent = response
+                .payments
+                .iter()
+                .any(|payment| payment.latest_update_timestamp >= since);
+            found.extend(
+                response
+                    .payments
+                    .into_iter()
+                    .filter(|payment| payment.latest_update_timestamp >= since)
+                    .filter_map(offer_payment),
+            );
+            match response.next_page_token {
+                Some(token) if recent => page_token = Some(token),
+                _ => return Ok(found),
+            }
+        }
+        tracing::warn!(
+            pages = MAX_PAYMENT_PAGES,
+            "stopped listing ldk-server payments at the page limit"
+        );
+        Ok(found)
+    }
+
     async fn block_height(&self) -> AppResult<u64> {
         let block = self.node_info().await?.current_best_block.ok_or_else(|| {
             AppError::Upstream("ldk-server did not return its best block".to_owned())
@@ -455,14 +344,6 @@ impl Lightning for LdkServerLightning {
         Ok(Box::pin(events))
     }
 
-    async fn cancel_invoice(&self, payment_hash: &str) -> AppResult<()> {
-        tracing::debug!(
-            payment_hash,
-            "ldk-server cannot cancel a standard invoice; leaving it open"
-        );
-        Ok(())
-    }
-
     async fn node_uri(&self) -> AppResult<String> {
         preferred_node_uri(self.node_info().await?.node_uris).ok_or_else(|| {
             AppError::Upstream("ldk-server does not advertise a public node URI".to_owned())
@@ -484,6 +365,9 @@ fn ldk_endpoint(url: &url::Url) -> AppResult<String> {
     Ok(format!("{host}:{port}"))
 }
 
+/// Pages of ldk-server payments read in one scan for offer payments.
+const MAX_PAYMENT_PAGES: usize = 50;
+
 fn ldk_settled_event(envelope: EventEnvelope) -> Option<InvoiceEvent> {
     let event_envelope::Event::PaymentReceived(received) = envelope.event? else {
         return None;
@@ -492,7 +376,11 @@ fn ldk_settled_event(envelope: EventEnvelope) -> Option<InvoiceEvent> {
     if payment.status != PaymentStatus::Succeeded as i32 {
         return None;
     }
-    let payment_kind::Kind::Bolt11(bolt11) = payment.kind?.kind? else {
+    let kind = payment.kind.as_ref()?.kind.as_ref()?;
+    if matches!(kind, payment_kind::Kind::Bolt12Offer(_)) {
+        return offer_payment(payment).map(InvoiceEvent::OfferPaid);
+    }
+    let payment_kind::Kind::Bolt11(bolt11) = kind else {
         return None;
     };
     if bolt11.hash.is_empty() {
@@ -500,11 +388,33 @@ fn ldk_settled_event(envelope: EventEnvelope) -> Option<InvoiceEvent> {
     }
     let preimage = bolt11
         .preimage
+        .as_deref()
         .and_then(|preimage| hex::decode(preimage).ok())
         .unwrap_or_default();
     Some(InvoiceEvent::Settled {
-        payment_hash: bolt11.hash,
+        payment_hash: bolt11.hash.clone(),
         preimage,
+    })
+}
+
+/// A successful inbound payment for a BOLT12 offer, or `None` for any
+/// other payment.
+fn offer_payment(payment: Payment) -> Option<OfferPayment> {
+    if payment.status != PaymentStatus::Succeeded as i32
+        || payment.direction != PaymentDirection::Inbound as i32
+    {
+        return None;
+    }
+    let payment_kind::Kind::Bolt12Offer(offer) = payment.kind?.kind? else {
+        return None;
+    };
+    if offer.offer_id.is_empty() {
+        return None;
+    }
+    Some(OfferPayment {
+        offer_id: offer.offer_id,
+        payment_hash: offer.hash.unwrap_or_default(),
+        amount_msats: payment.amount_msat.unwrap_or_default(),
     })
 }
 
@@ -523,35 +433,6 @@ mod tests {
     fn converts_ldk_url_to_client_endpoint() {
         let url = url::Url::parse("https://127.0.0.1:3002").unwrap();
         assert_eq!(ldk_endpoint(&url).unwrap(), "127.0.0.1:3002");
-    }
-
-    #[test]
-    fn maps_only_fully_paid_settled_invoices_to_events() {
-        let settled = lnrpc::Invoice {
-            r_hash: vec![0xab; 32],
-            r_preimage: vec![7; 32],
-            value_msat: 1_000,
-            amt_paid_msat: 1_000,
-            state: lnrpc::invoice::InvoiceState::Settled as i32,
-            ..Default::default()
-        };
-        assert_eq!(
-            settled_event(settled.clone()),
-            Some(InvoiceEvent::Settled {
-                payment_hash: "ab".repeat(32),
-                preimage: vec![7; 32],
-            })
-        );
-        let open = lnrpc::Invoice {
-            state: lnrpc::invoice::InvoiceState::Open as i32,
-            ..settled.clone()
-        };
-        assert_eq!(settled_event(open), None);
-        let underpaid = lnrpc::Invoice {
-            amt_paid_msat: 999,
-            ..settled
-        };
-        assert_eq!(settled_event(underpaid), None);
     }
 
     #[test]
@@ -582,6 +463,60 @@ mod tests {
                 payment_hash: "ab".repeat(32),
                 preimage: vec![7; 32],
             })
+        );
+    }
+
+    fn offer_received(direction: PaymentDirection, status: PaymentStatus) -> EventEnvelope {
+        EventEnvelope {
+            event: Some(event_envelope::Event::PaymentReceived(
+                ldk_server_client::ldk_server_grpc::events::PaymentReceived {
+                    payment: Some(Payment {
+                        kind: Some(ldk_server_client::ldk_server_grpc::types::PaymentKind {
+                            kind: Some(payment_kind::Kind::Bolt12Offer(
+                                ldk_server_client::ldk_server_grpc::types::Bolt12Offer {
+                                    hash: Some("ab".repeat(32)),
+                                    offer_id: "cd".repeat(32),
+                                    ..Default::default()
+                                },
+                            )),
+                        }),
+                        amount_msat: Some(5_000_000),
+                        direction: direction as i32,
+                        status: status as i32,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            )),
+        }
+    }
+
+    #[test]
+    fn maps_ldk_offer_payments_by_offer_id() {
+        assert_eq!(
+            ldk_settled_event(offer_received(
+                PaymentDirection::Inbound,
+                PaymentStatus::Succeeded
+            )),
+            Some(InvoiceEvent::OfferPaid(OfferPayment {
+                offer_id: "cd".repeat(32),
+                payment_hash: "ab".repeat(32),
+                amount_msats: 5_000_000,
+            }))
+        );
+        assert_eq!(
+            ldk_settled_event(offer_received(
+                PaymentDirection::Inbound,
+                PaymentStatus::Pending
+            )),
+            None
+        );
+        assert_eq!(
+            ldk_settled_event(offer_received(
+                PaymentDirection::Outbound,
+                PaymentStatus::Succeeded
+            )),
+            None
         );
     }
 

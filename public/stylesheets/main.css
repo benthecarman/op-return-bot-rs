@@ -139,17 +139,19 @@ input[type="text"]:focus, textarea:focus { outline: none; border-color: var(--ac
    its QR code and details. */
 .method { position: absolute; opacity: 0; pointer-events: none; }
 .tabs { display: flex; width: 100%; padding: 3px; gap: 3px; background: var(--bg); border-radius: 8px; }
-.tabs label { flex: 1; text-align: center; padding: 6px 10px; border-radius: 6px; font-size: 14px; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.tabs label { flex: 1; text-align: center; padding: 6px 6px; border-radius: 6px; font-size: 13.5px; color: var(--muted); cursor: pointer; white-space: nowrap; }
 .tabs label:hover { color: var(--text); }
 #m-unified:checked ~ * label[for="m-unified"],
 #m-onchain:checked ~ * label[for="m-onchain"],
-#m-lightning:checked ~ * label[for="m-lightning"] { background: var(--raised); color: var(--text); }
+#m-lightning:checked ~ * label[for="m-lightning"],
+#m-bolt12:checked ~ * label[for="m-bolt12"] { background: var(--raised); color: var(--text); }
 #m-unified:focus-visible ~ * label[for="m-unified"],
 #m-onchain:focus-visible ~ * label[for="m-onchain"],
-#m-lightning:focus-visible ~ * label[for="m-lightning"] { outline: 2px solid var(--accent); outline-offset: -2px; }
-.pay .v-onchain, .pay .v-lightning,
-#m-onchain:checked ~ * .v-unified, #m-lightning:checked ~ * .v-unified { display: none; }
-#m-onchain:checked ~ * .v-onchain, #m-lightning:checked ~ * .v-lightning { display: block; }
+#m-lightning:focus-visible ~ * label[for="m-lightning"],
+#m-bolt12:focus-visible ~ * label[for="m-bolt12"] { outline: 2px solid var(--accent); outline-offset: -2px; }
+.pay .v-onchain, .pay .v-lightning, .pay .v-bolt12,
+#m-onchain:checked ~ * .v-unified, #m-lightning:checked ~ * .v-unified, #m-bolt12:checked ~ * .v-unified { display: none; }
+#m-onchain:checked ~ * .v-onchain, #m-lightning:checked ~ * .v-lightning, #m-bolt12:checked ~ * .v-bolt12 { display: block; }
 .qr { background: #fff; border-radius: 8px; padding: 12px; line-height: 0; }
 .qr img { width: 276px; height: 276px; image-rendering: pixelated; }
 .pay dl { margin: 0 0 18px; display: grid; gap: 4px; }

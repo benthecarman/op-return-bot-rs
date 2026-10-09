@@ -18,23 +18,14 @@ sending_wallet_name = "sending"
 receiving_wallet_name = "receiving"
 wallet_notify_key_file = "/run/credentials/op-return-bot.service/wallet-notify-key"
 
-[lightning]
-backend = "lnd"
+[lightning.ldk_server]
+rpc_url = "https://127.0.0.1:3002"
+config_file = "/var/lib/ldk-server/config.toml"
+macaroon_file = "/run/credentials/op-return-bot.service/ldk-server.macaroon"
 
-[lightning.lnd]
-rpc_url = "https://127.0.0.1:10009"
-macaroon_file = "/run/credentials/op-return-bot.service/lnd-invoice.macaroon"
-tls_cert_file = "/run/credentials/op-return-bot.service/lnd-tls.cert"
-
-# To use ldk-server, change the backend and replace the LND section with:
-# [lightning.ldk_server]
-# rpc_url = "https://127.0.0.1:3002"
-# config_file = "/var/lib/ldk-server/config.toml"
-# macaroon_file = "/run/credentials/op-return-bot.service/ldk-server.macaroon"
-#
 # macaroon_file is optional. Use a macaroon that can only create and look up
-# invoices and read events and node info. If you leave it out, the bot reads
-# the admin macaroon from
+# invoices and offers and read events and node info. If you leave it out, the
+# bot reads the admin macaroon from
 # <storage.disk.dir_path>/<network>/macaroons/admin.macaroon, where both
 # values come from the ldk-server config file.
 

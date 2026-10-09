@@ -56,6 +56,8 @@ struct UnifiedOutput {
     address: String,
     amount_sats: i64,
     r_hash: String,
+    /// A BOLT12 offer for the same payment.
+    offer: Option<String>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -143,6 +145,7 @@ impl McpServer {
             address: on_chain.address,
             amount_sats: on_chain.expected_amount_sats,
             r_hash: invoice.payment_hash,
+            offer: created.offer.map(|offer| offer.offer),
         }))
     }
 

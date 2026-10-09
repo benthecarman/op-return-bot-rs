@@ -3,8 +3,8 @@ use sqlx::{FromRow, Sqlite, Transaction};
 use crate::{
     AppError, AppResult, Database,
     domain::{
-        Invoice, LightningBackend, OnChainPayment, OpReturnRequest, decode_legacy_bytes,
-        decode_legacy_fee_rate, encode_legacy_bytes, encode_legacy_fee_rate,
+        Bolt12Offer, Invoice, LightningBackend, OnChainPayment, OpReturnRequest,
+        decode_legacy_bytes, decode_legacy_fee_rate, encode_legacy_bytes, encode_legacy_fee_rate,
     },
 };
 
@@ -37,6 +37,12 @@ pub struct NewInvoice<'a> {
 pub struct NewOnChainPayment<'a> {
     pub address: &'a str,
     pub expected_amount_sats: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct NewOffer<'a> {
+    pub offer_id: &'a str,
+    pub offer: &'a str,
 }
 
 #[derive(Clone, Debug)]
@@ -164,6 +170,25 @@ impl TryFrom<RequestRow> for OpReturnRequest {
 }
 
 #[derive(FromRow)]
+struct OfferRow {
+    offer_id: String,
+    op_return_request_id: i64,
+    offer: String,
+    payment_hash: Option<String>,
+}
+
+impl From<OfferRow> for Bolt12Offer {
+    fn from(row: OfferRow) -> Self {
+        Self {
+            offer_id: row.offer_id,
+            request_id: row.op_return_request_id,
+            offer: row.offer,
+            payment_hash: row.payment_hash,
+        }
+    }
+}
+
+#[derive(FromRow)]
 struct RecentRow {
     id: i64,
     txid: String,
@@ -268,6 +293,7 @@ impl Repository {
         request: &NewRequest<'_>,
         invoice: &NewInvoice<'_>,
         on_chain: &NewOnChainPayment<'_>,
+        offer: &NewOffer<'_>,
         nip5: Option<&NewNip5<'_>>,
     ) -> AppResult<PaymentRecord> {
         let mut transaction = self.database.pool().begin().await?;
@@ -292,6 +318,15 @@ impl Repository {
         .bind(on_chain.address)
         .bind(created.id)
         .bind(on_chain.expected_amount_sats)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO bolt12_offers (offer_id, op_return_request_id, offer, payment_hash) \
+             VALUES (?, ?, ?, NULL)",
+        )
+        .bind(offer.offer_id)
+        .bind(created.id)
+        .bind(offer.offer)
         .execute(&mut *transaction)
         .await?;
         if let Some(nip5) = nip5 {
@@ -400,6 +435,59 @@ impl Repository {
         .fetch_all(self.database.pool())
         .await?;
         rows.into_iter().map(TryInto::try_into).collect()
+    }
+
+    /// The BOLT12 offer of a request, if it has one.
+    pub async fn find_offer(&self, request_id: i64) -> AppResult<Option<Bolt12Offer>> {
+        Ok(sqlx::query_as::<_, OfferRow>(
+            "SELECT offer_id, op_return_request_id, offer, payment_hash \
+             FROM bolt12_offers WHERE op_return_request_id = ?",
+        )
+        .bind(request_id)
+        .fetch_optional(self.database.pool())
+        .await?
+        .map(Into::into))
+    }
+
+    pub async fn find_offer_by_id(&self, offer_id: &str) -> AppResult<Option<Bolt12Offer>> {
+        Ok(sqlx::query_as::<_, OfferRow>(
+            "SELECT offer_id, op_return_request_id, offer, payment_hash \
+             FROM bolt12_offers WHERE offer_id = ?",
+        )
+        .bind(offer_id)
+        .fetch_optional(self.database.pool())
+        .await?
+        .map(Into::into))
+    }
+
+    /// Finds an offer by its encoded form. Offers are case-insensitive.
+    pub async fn find_offer_by_text(&self, offer: &str) -> AppResult<Option<Bolt12Offer>> {
+        Ok(sqlx::query_as::<_, OfferRow>(
+            "SELECT offer_id, op_return_request_id, offer, payment_hash \
+             FROM bolt12_offers WHERE lower(offer) = lower(?)",
+        )
+        .bind(offer)
+        .fetch_optional(self.database.pool())
+        .await?
+        .map(Into::into))
+    }
+
+    /// Stores the payment hash of a paid offer. Returns false when the
+    /// offer was already paid.
+    pub async fn record_offer_payment(
+        &self,
+        offer_id: &str,
+        payment_hash: &str,
+    ) -> AppResult<bool> {
+        let result = sqlx::query(
+            "UPDATE bolt12_offers SET payment_hash = ? \
+             WHERE offer_id = ? AND payment_hash IS NULL",
+        )
+        .bind(payment_hash)
+        .bind(offer_id)
+        .execute(self.database.pool())
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 
     pub async fn mark_invoice_paid(&self, payment_hash: &str) -> AppResult<bool> {

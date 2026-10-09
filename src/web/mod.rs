@@ -214,6 +214,7 @@ struct UnifiedResponse {
     amount_btc: String,
     r_hash: String,
     payment_string: String,
+    offer: Option<String>,
 }
 
 #[derive(Template)]
@@ -244,6 +245,8 @@ struct UnifiedView {
     address: String,
     amount_btc: String,
     on_chain_uri: String,
+    /// Requests made before BOLT12 support have no offer.
+    offer: Option<String>,
 }
 
 #[derive(Template)]
@@ -638,6 +641,14 @@ async fn invoice(
     if record.request.payment_status(invoice.paid, on_chain_txid) == PaymentStatus::Pending {
         return pending_page(&state, &invoice.payment_hash, &record.request);
     }
+    let offer = match &record.on_chain {
+        Some(_) => state
+            .repository
+            .find_offer(record.request.id)
+            .await?
+            .map(|offer| offer.offer),
+        None => None,
+    };
     let unified = record
         .on_chain
         .as_ref()
@@ -653,6 +664,7 @@ async fn invoice(
                 on_chain_uri: format!("bitcoin:{}?amount={amount_btc}", on_chain.address),
                 address: on_chain.address.clone(),
                 amount_btc,
+                offer: offer.clone(),
             })
         })
         .transpose()?;
@@ -993,6 +1005,7 @@ fn unified_response(created: &CreatedPayment) -> AppResult<UnifiedResponse> {
             on_chain.expected_amount_sats,
             &invoice.bolt11,
         ),
+        offer: created.offer.as_ref().map(|offer| offer.offer.clone()),
     })
 }
 
@@ -1022,6 +1035,9 @@ async fn known_qr_payload(state: &AppState, payload: &str) -> AppResult<bool> {
                 .await
         }
         QrPayment::Address(address) => state.repository.find_by_address(&address).await,
+        QrPayment::Offer(offer) => {
+            return Ok(state.repository.find_offer_by_text(&offer).await?.is_some());
+        }
     };
     match found {
         Ok(_) => Ok(true),
@@ -1034,11 +1050,15 @@ async fn known_qr_payload(state: &AppState, payload: &str) -> AppResult<bool> {
 enum QrPayment {
     Invoice(String),
     Address(String),
+    Offer(String),
 }
 
 fn qr_payment_identifier(payload: &str) -> Option<QrPayment> {
     let payload = payload.trim();
     let lower = payload.to_ascii_lowercase();
+    if lower.starts_with("lno1") {
+        return Some(QrPayment::Offer(lower));
+    }
     if lower.starts_with("lnbc") || lower.starts_with("lnbcrt") {
         return Some(QrPayment::Invoice(lower));
     }
@@ -1320,6 +1340,12 @@ mod tests {
             ))
         );
         assert_eq!(qr_payment_identifier("bitcoin:?amount=1"), None);
+        assert_eq!(
+            qr_payment_identifier("LNO1QGSQVGNWGCG35Z6EE2H3YCZRADDM72XRFUA9UVE"),
+            Some(QrPayment::Offer(
+                "lno1qgsqvgnwgcg35z6ee2h3yczraddm72xrfua9uve".to_owned()
+            ))
+        );
         assert_eq!(qr_payment_identifier("https://evil.example"), None);
     }
 

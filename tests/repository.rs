@@ -5,8 +5,8 @@ use op_return_bot::{
     config::DatabaseConfig,
     domain::{LightningBackend, PaymentStatus},
     repository::{
-        CompletedRequest, ExpiredCandidate, NewInvoice, NewNip5, NewOnChainPayment, NewRequest,
-        NewZap, Repository,
+        CompletedRequest, ExpiredCandidate, NewInvoice, NewNip5, NewOffer, NewOnChainPayment,
+        NewRequest, NewZap, Repository,
     },
 };
 use tempfile::TempDir;
@@ -91,7 +91,13 @@ async fn creates_unified_payment_atomically() {
         expected_amount_sats: 5_000,
     };
     let created = repository
-        .create_unified_request(&request(b"unified"), &invoice(), &on_chain, None)
+        .create_unified_request(
+            &request(b"unified"),
+            &invoice(),
+            &on_chain,
+            &offer("bcrt1qexample"),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(created.on_chain.unwrap().expected_amount_sats, 5_000);
@@ -116,6 +122,7 @@ async fn creates_nip5_with_its_payment() {
             &request(b"nip5:alice:key"),
             &invoice(),
             &on_chain,
+            &offer("bcrt1qexample"),
             Some(&NewNip5 {
                 name: "alice",
                 public_key: "key",
@@ -156,6 +163,7 @@ async fn creates_the_legacy_accounting_report() {
             &request(&message),
             &invoice(),
             &on_chain("bcrt1qreport"),
+            &offer("bcrt1qreport"),
             Some(&NewNip5 {
                 name: "report",
                 public_key: "key",
@@ -242,6 +250,13 @@ async fn payment_updates_are_idempotent() {
     );
 }
 
+fn offer(offer_id: &str) -> NewOffer<'_> {
+    NewOffer {
+        offer_id,
+        offer: "lno1qgsqvgnwgcg35z6ee2h3yczraddm72xrfua9uve",
+    }
+}
+
 fn on_chain(address: &str) -> NewOnChainPayment<'_> {
     NewOnChainPayment {
         address,
@@ -254,7 +269,13 @@ async fn lists_on_chain_and_paid_but_unpublished_requests() {
     let (_directory, database) = database().await;
     let repository = Repository::new(database);
     let created = repository
-        .create_unified_request(&request(b"open"), &invoice(), &on_chain("bcrt1qopen"), None)
+        .create_unified_request(
+            &request(b"open"),
+            &invoice(),
+            &on_chain("bcrt1qopen"),
+            &offer("bcrt1qopen"),
+            None,
+        )
         .await
         .unwrap();
     let request_id = created.request.id;
@@ -320,6 +341,7 @@ async fn closes_only_expired_unpaid_requests() {
                     &request(b"unified"),
                     &new_invoice,
                     &on_chain("bcrt1qunified"),
+                    &offer("bcrt1qunified"),
                     None,
                 )
                 .await
@@ -476,7 +498,13 @@ async fn never_closes_a_paid_request() {
         ..invoice()
     };
     let unified = repository
-        .create_unified_request(&request(b"unified"), &second, &on_chain("bcrt1qpaid"), None)
+        .create_unified_request(
+            &request(b"unified"),
+            &second,
+            &on_chain("bcrt1qpaid"),
+            &offer("bcrt1qpaid"),
+            None,
+        )
         .await
         .unwrap();
     assert!(
@@ -503,6 +531,7 @@ async fn rejects_a_duplicate_nip5_name_as_an_invalid_request() {
             &request(b"first"),
             &invoice(),
             &on_chain("bcrt1qfirst"),
+            &offer("bcrt1qfirst"),
             Some(&nip5),
         )
         .await
@@ -522,6 +551,7 @@ async fn rejects_a_duplicate_nip5_name_as_an_invalid_request() {
             &request(b"second"),
             &second,
             &on_chain("bcrt1qsecond"),
+            &offer("bcrt1qsecond"),
             Some(&duplicate),
         )
         .await
@@ -548,6 +578,7 @@ async fn releases_an_unpaid_nip5_name_when_the_request_closes() {
             &request(b"first"),
             &invoice(),
             &on_chain("bcrt1qfirst"),
+            &offer("bcrt1qfirst"),
             Some(&NewNip5 {
                 name: "alice",
                 public_key: "key",
@@ -569,6 +600,7 @@ async fn releases_an_unpaid_nip5_name_when_the_request_closes() {
             &request(b"second"),
             &second,
             &on_chain("bcrt1qsecond"),
+            &offer("bcrt1qsecond"),
             Some(&NewNip5 {
                 name: "alice",
                 public_key: "other",
@@ -683,4 +715,64 @@ async fn pages_through_published_public_requests() {
         .unwrap();
     assert_eq!(next_page.len(), 1);
     assert_eq!(next_page[0].id, ids[0]);
+}
+
+#[tokio::test]
+async fn stores_and_pays_a_bolt12_offer() {
+    let (_directory, database) = database().await;
+    let repository = Repository::new(database);
+    let created = repository
+        .create_unified_request(
+            &request(b"offer"),
+            &invoice(),
+            &on_chain("bcrt1qoffer"),
+            &offer("offer-id"),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let stored = repository
+        .find_offer(created.request.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.offer_id, "offer-id");
+    assert_eq!(stored.payment_hash, None);
+    assert_eq!(
+        repository.find_offer_by_id("offer-id").await.unwrap(),
+        Some(stored.clone())
+    );
+    // Offers are case-insensitive, as a QR code may carry them uppercase.
+    assert_eq!(
+        repository
+            .find_offer_by_text(&stored.offer.to_uppercase())
+            .await
+            .unwrap(),
+        Some(stored)
+    );
+    assert_eq!(repository.find_offer_by_id("other").await.unwrap(), None);
+
+    let hash = "cd".repeat(32);
+    assert!(
+        repository
+            .record_offer_payment("offer-id", &hash)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !repository
+            .record_offer_payment("offer-id", &hash)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        repository
+            .find_offer(created.request.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .payment_hash,
+        Some(hash)
+    );
 }

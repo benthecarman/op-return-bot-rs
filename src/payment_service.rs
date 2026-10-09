@@ -19,12 +19,15 @@ use crate::{
         BitcoinClient, Funding, ReceivedPayment, Wallet, is_missing_inputs_error,
         is_policy_rejection,
     },
-    lightning::{CreatedInvoice, InvoiceEvent, InvoiceState, InvoiceStream, Lightning},
+    domain::Bolt12Offer,
+    lightning::{
+        CreatedInvoice, InvoiceEvent, InvoiceState, InvoiceStream, Lightning, OfferPayment,
+    },
     pricing::{PriceQuote, STANDARD_OP_RETURN_BYTES, quote},
     rate_limit::RateLimiter,
     repository::{
-        CompletedRequest, ExpiredCandidate, NewInvoice, NewNip5, NewOnChainPayment, NewRequest,
-        NewZap, OpenInvoice, PaymentRecord, Repository,
+        CompletedRequest, ExpiredCandidate, NewInvoice, NewNip5, NewOffer, NewOnChainPayment,
+        NewRequest, NewZap, OpenInvoice, PaymentRecord, Repository,
     },
     social::SocialPublisher,
 };
@@ -35,6 +38,12 @@ const INVOICE_CLOSE_GRACE_SECONDS: i64 = 3_600;
 const EXPIRED_REQUESTS_PER_PASS: u32 = 200;
 const ZAP_WINDOW_SECONDS: i64 = 86_400;
 const ZAPS_PER_PASS: u32 = 256;
+/// Service state key holding when ldk-server was last scanned for BOLT12
+/// offer payments.
+const OFFER_SCAN_STATE: &str = "bolt12_payments_scanned_at";
+/// Each scan reaches this far before the previous one, so that a payment
+/// updated during a scan is not missed.
+const OFFER_SCAN_OVERLAP_SECONDS: i64 = 300;
 /// Wait between attempts to subscribe to Lightning invoice updates.
 const SUBSCRIPTION_RETRY: Duration = Duration::from_secs(5);
 const MIN_FEE_RATE_SAT_VB: u64 = 1;
@@ -66,6 +75,8 @@ pub struct CreateRequest {
 pub struct CreatedPayment {
     pub record: PaymentRecord,
     pub quote: PriceQuote,
+    /// The BOLT12 offer of a unified request.
+    pub offer: Option<Bolt12Offer>,
 }
 
 struct PreparedTransaction {
@@ -173,6 +184,7 @@ impl PaymentService {
         Ok(CreatedPayment {
             record,
             quote: price,
+            offer: None,
         })
     }
 
@@ -186,10 +198,18 @@ impl PaymentService {
         nip5: Option<&NewNip5<'_>>,
     ) -> AppResult<CreatedPayment> {
         let price = self.price(input).await?;
-        let (invoice, address) = tokio::try_join!(
+        let amount_msats = msats(price.amount_sats)?;
+        let hash = message_hash(&input.message);
+        let offer_description = format!("OP_RETURN Bot {}", hex::encode(hash));
+        let (invoice, offer, address) = tokio::try_join!(
             self.lightning.create_invoice_with_description_hash(
-                msats(price.amount_sats)?,
-                message_hash(&input.message),
+                amount_msats,
+                hash,
+                self.config.payments.invoice_expiry_seconds,
+            ),
+            self.lightning.create_offer(
+                amount_msats,
+                &offer_description,
                 self.config.payments.invoice_expiry_seconds,
             ),
             self.bitcoin.new_receiving_address(),
@@ -209,13 +229,24 @@ impl PaymentService {
             address: &address,
             expected_amount_sats,
         };
+        let offer_row = NewOffer {
+            offer_id: &offer.offer_id,
+            offer: &offer.offer,
+        };
         let record = self
             .repository
-            .create_unified_request(&request, &invoice_row, &on_chain, nip5)
+            .create_unified_request(&request, &invoice_row, &on_chain, &offer_row, nip5)
             .await?;
+        let offer = Bolt12Offer {
+            offer_id: offer.offer_id,
+            request_id: record.request.id,
+            offer: offer.offer,
+            payment_hash: None,
+        };
         Ok(CreatedPayment {
             record,
             quote: price,
+            offer: Some(offer),
         })
     }
 
@@ -354,11 +385,6 @@ impl PaymentService {
         }
         let record = self.repository.find_by_address(&payment.address).await?;
         tracing::info!(request_id = record.request.id, txid = %payment.txid, amount_sats, "received on-chain payment");
-        if let Some(invoice) = &record.invoice
-            && let Err(error) = self.lightning.cancel_invoice(&invoice.payment_hash).await
-        {
-            tracing::warn!(%error, payment_hash = %invoice.payment_hash, "could not cancel the Lightning invoice after an on-chain payment");
-        }
         if let Err(error) = self.publish_request(record.request.id).await {
             tracing::error!(%error, request_id = record.request.id, "could not publish request after on-chain payment");
         }
@@ -383,6 +409,91 @@ impl PaymentService {
         if let Err(error) = self.publish_request(invoice.request_id).await {
             tracing::error!(%error, request_id = invoice.request_id, "could not publish request after Lightning payment");
         }
+    }
+
+    /// Handles a payment for a BOLT12 offer. The request's Lightning payment
+    /// counts as paid, so the request publishes as after a BOLT11 payment.
+    async fn handle_offer_payment(&self, payment: &OfferPayment) {
+        let offer = match self.repository.find_offer_by_id(&payment.offer_id).await {
+            Ok(Some(offer)) => offer,
+            // An offer that some other user of the node created.
+            Ok(None) => return,
+            Err(error) => {
+                tracing::error!(%error, offer_id = %payment.offer_id, "could not load a paid offer");
+                return;
+            }
+        };
+        let record = match self.repository.find_record(offer.request_id).await {
+            Ok(record) => record,
+            Err(error) => {
+                tracing::error!(%error, request_id = offer.request_id, "could not load the request of a paid offer");
+                return;
+            }
+        };
+        let Some(invoice) = record.invoice else {
+            return;
+        };
+        let expected_msats = invoice
+            .amount_sats
+            .and_then(|sats| u64::try_from(sats).ok())
+            .map(|sats| sats.saturating_mul(1_000));
+        if expected_msats.is_some_and(|expected| payment.amount_msats < expected) {
+            tracing::warn!(
+                request_id = offer.request_id,
+                amount_msats = payment.amount_msats,
+                "offer paid below the request amount; ignoring"
+            );
+            return;
+        }
+        match self
+            .repository
+            .record_offer_payment(&offer.offer_id, &payment.payment_hash)
+            .await
+        {
+            Ok(true) => {
+                tracing::info!(request_id = offer.request_id, offer_id = %offer.offer_id, "BOLT12 offer paid");
+            }
+            // Seen before, by the event stream or an earlier scan.
+            Ok(false) if invoice.paid => return,
+            Ok(false) => {}
+            Err(error) => {
+                tracing::error!(%error, offer_id = %offer.offer_id, "could not record an offer payment");
+                return;
+            }
+        }
+        self.settle_invoice(&OpenInvoice {
+            request_id: offer.request_id,
+            payment_hash: invoice.payment_hash,
+        })
+        .await;
+    }
+
+    /// Finds offer payments that the event stream missed, for example while
+    /// the service was down. Each scan starts a little before the last one.
+    async fn sync_offer_payments(&self) -> AppResult<()> {
+        let now = unix_time()?;
+        let since = match self
+            .repository
+            .service_state(OFFER_SCAN_STATE)
+            .await?
+            .and_then(|value| value.parse::<i64>().ok())
+        {
+            Some(scanned) => scanned.saturating_sub(OFFER_SCAN_OVERLAP_SECONDS),
+            // The first scan looks back as far as a request stays open.
+            None => now.saturating_sub(
+                i64::try_from(self.config.payments.on_chain_expiry_seconds).unwrap_or(i64::MAX),
+            ),
+        };
+        let payments = self
+            .lightning
+            .offer_payments_since(u64::try_from(since).unwrap_or_default())
+            .await?;
+        for payment in &payments {
+            self.handle_offer_payment(payment).await;
+        }
+        self.repository
+            .set_service_state(OFFER_SCAN_STATE, &now.to_string())
+            .await
     }
 
     async fn poll_on_chain(&self) -> AppResult<()> {
@@ -567,8 +678,16 @@ impl PaymentService {
         if let Err(error) = self.refresh_block_height().await {
             tracing::error!(%error, "could not read the block height");
         }
-        if let Err(error) = self.close_expired_requests().await {
-            tracing::error!(%error, "could not close expired requests");
+        // A missed offer payment must be found before its request closes.
+        match self.sync_offer_payments().await {
+            Ok(()) => {
+                if let Err(error) = self.close_expired_requests().await {
+                    tracing::error!(%error, "could not close expired requests");
+                }
+            }
+            Err(error) => {
+                tracing::error!(%error, "could not check BOLT12 offer payments; not closing requests");
+            }
         }
         if let Err(error) = self.poll_on_chain().await {
             tracing::error!(%error, "could not check on-chain payments");
@@ -602,6 +721,9 @@ impl PaymentService {
             self.mempool_limit.store(false, Ordering::Relaxed);
         }
         tracing::info!(count = records.len(), "processing unhandled requests");
+        if let Err(error) = self.sync_offer_payments().await {
+            tracing::warn!(%error, "could not check BOLT12 offer payments for unhandled requests");
+        }
 
         let received = match self.bitcoin.received_payments().await {
             Ok(received) => Some(received),
@@ -739,6 +861,9 @@ impl PaymentService {
                     preimage,
                 }) => {
                     self.handle_settled_invoice(&payment_hash, &preimage).await;
+                }
+                Ok(InvoiceEvent::OfferPaid(payment)) => {
+                    self.handle_offer_payment(&payment).await;
                 }
                 Err(error) => {
                     tracing::error!(%error, "Lightning invoice stream failed");

@@ -72,8 +72,7 @@ impl AppConfig {
                 "nostr.relays must not be empty when Nostr is enabled".to_owned(),
             ));
         }
-        self.lightning.validate()?;
-        Ok(())
+        self.lightning.validate()
     }
 }
 
@@ -155,52 +154,24 @@ where
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LightningConfig {
-    pub backend: LightningBackendKind,
-    pub lnd: Option<LndConfig>,
-    pub ldk_server: Option<LdkServerConfig>,
+    /// Older configurations name the backend. ldk-server is the only one.
+    #[serde(default)]
+    pub backend: Option<String>,
+    pub ldk_server: LdkServerConfig,
 }
 
 impl LightningConfig {
     fn validate(&self) -> AppResult<()> {
-        match self.backend {
-            LightningBackendKind::Lnd => {
-                self.lnd()?;
-            }
-            LightningBackendKind::LdkServer => {
-                self.ldk_server()?;
-            }
+        match self.backend.as_deref() {
+            None | Some("ldk-server") => Ok(()),
+            Some("lnd") => Err(AppError::Config(
+                "LND support was removed; use ldk-server".to_owned(),
+            )),
+            Some(other) => Err(AppError::Config(format!(
+                "unknown Lightning backend '{other}'; use ldk-server"
+            ))),
         }
-        Ok(())
     }
-
-    pub(crate) fn lnd(&self) -> AppResult<&LndConfig> {
-        self.lnd.as_ref().ok_or_else(|| {
-            AppError::Config("lightning.lnd is required when backend is 'lnd'".to_owned())
-        })
-    }
-
-    pub(crate) fn ldk_server(&self) -> AppResult<&LdkServerConfig> {
-        self.ldk_server.as_ref().ok_or_else(|| {
-            AppError::Config(
-                "lightning.ldk_server is required when backend is 'ldk-server'".to_owned(),
-            )
-        })
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-pub enum LightningBackendKind {
-    Lnd,
-    LdkServer,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LndConfig {
-    pub rpc_url: Url,
-    pub macaroon_file: PathBuf,
-    pub tls_cert_file: PathBuf,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -319,13 +290,9 @@ sending_wallet_name = "sending"
 receiving_wallet_name = "receiving"
 wallet_notify_key_file = "/run/secrets/wallet-notify-key"
 
-[lightning]
-backend = "lnd"
-
-[lightning.lnd]
-rpc_url = "https://127.0.0.1:10009"
-macaroon_file = "/run/secrets/macaroon"
-tls_cert_file = "/run/secrets/tls.cert"
+[lightning.ldk_server]
+rpc_url = "https://127.0.0.1:3002"
+config_file = "/tmp/ldk-server.toml"
 "#
     }
 
@@ -336,68 +303,49 @@ tls_cert_file = "/run/secrets/tls.cert"
 
         assert_eq!(config.server.address, IpAddr::from([127, 0, 0, 1]));
         assert_eq!(config.bitcoin.network, Network::Regtest);
-        assert_eq!(config.lightning.backend, LightningBackendKind::Lnd);
-        assert!(config.lightning.lnd.is_some());
-        assert!(config.lightning.ldk_server.is_none());
+        assert!(config.lightning.ldk_server.macaroon_file.is_none());
         assert_eq!(config.payments.message_max_bytes, 99_000);
-    }
-
-    #[test]
-    fn parses_ldk_server_without_lnd() {
-        let text = valid_config()
-            .replace("backend = \"lnd\"", "backend = \"ldk-server\"")
-            .replace(
-                r#"[lightning.lnd]
-rpc_url = "https://127.0.0.1:10009"
-macaroon_file = "/run/secrets/macaroon"
-tls_cert_file = "/run/secrets/tls.cert""#,
-                r#"[lightning.ldk_server]
-rpc_url = "https://127.0.0.1:3002"
-config_file = "/tmp/ldk-server.toml""#,
-            );
-        let config: AppConfig = toml::from_str(&text).unwrap();
-        config.validate().unwrap();
-
-        assert_eq!(config.lightning.backend, LightningBackendKind::LdkServer);
-        assert!(config.lightning.lnd.is_none());
-        let ldk_server = config.lightning.ldk_server.unwrap();
-        assert!(ldk_server.macaroon_file.is_none());
     }
 
     #[test]
     fn parses_ldk_server_macaroon_file() {
         let text = valid_config().replace(
-            "[lightning.lnd]",
-            r#"[lightning.ldk_server]
-rpc_url = "https://127.0.0.1:3002"
-config_file = "/tmp/ldk-server.toml"
-macaroon_file = "/run/secrets/ldk-server.macaroon"
-
-[lightning.lnd]"#,
+            "config_file = \"/tmp/ldk-server.toml\"",
+            "config_file = \"/tmp/ldk-server.toml\"\nmacaroon_file = \"/run/secrets/ldk-server.macaroon\"",
         );
         let config: AppConfig = toml::from_str(&text).unwrap();
 
         assert_eq!(
-            config.lightning.ldk_server.unwrap().macaroon_file,
+            config.lightning.ldk_server.macaroon_file,
             Some(PathBuf::from("/run/secrets/ldk-server.macaroon"))
         );
     }
 
     #[test]
-    fn rejects_missing_selected_lightning_backend() {
+    fn accepts_the_old_ldk_server_backend_key() {
         let text = valid_config().replace(
-            r#"[lightning.lnd]
-rpc_url = "https://127.0.0.1:10009"
-macaroon_file = "/run/secrets/macaroon"
-tls_cert_file = "/run/secrets/tls.cert""#,
-            "",
+            "[lightning.ldk_server]",
+            "[lightning]\nbackend = \"ldk-server\"\n\n[lightning.ldk_server]",
         );
-        let config: AppConfig = toml::from_str(&text).unwrap();
+        toml::from_str::<AppConfig>(&text)
+            .unwrap()
+            .validate()
+            .unwrap();
+    }
 
-        let error = config.validate().unwrap_err();
+    #[test]
+    fn rejects_the_removed_lnd_backend() {
+        let text = valid_config().replace(
+            "[lightning.ldk_server]",
+            "[lightning]\nbackend = \"lnd\"\n\n[lightning.ldk_server]",
+        );
+        let error = toml::from_str::<AppConfig>(&text)
+            .unwrap()
+            .validate()
+            .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "configuration error: lightning.lnd is required when backend is 'lnd'"
+            "configuration error: LND support was removed; use ldk-server"
         );
     }
 

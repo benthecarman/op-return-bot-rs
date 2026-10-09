@@ -59,9 +59,21 @@ pub struct OnChainPayment {
     pub txid: Option<String>,
 }
 
+/// A fixed-amount BOLT12 offer for a request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Bolt12Offer {
+    pub offer_id: String,
+    pub request_id: i64,
+    pub offer: String,
+    /// Set once the offer is paid.
+    pub payment_hash: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum LightningBackend {
+    /// Rows from before LND support was removed. They stay readable but are
+    /// never looked up on the node.
     Lnd,
     LdkServer,
 }

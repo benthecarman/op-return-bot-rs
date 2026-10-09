@@ -4,19 +4,21 @@
 {% block content %}
 <section class="page center wrap">
   <div class="card pay">
-    {% match unified %}{% when Some with (_) %}
+    {% match unified %}{% when Some with (pay) %}
     <input class="method" type="radio" name="method" id="m-unified" checked>
     <input class="method" type="radio" name="method" id="m-onchain">
     <input class="method" type="radio" name="method" id="m-lightning">
+    {% if pay.offer.is_some() %}<input class="method" type="radio" name="method" id="m-bolt12">{% endif %}
     {% when None %}{% endmatch %}
     <div class="pay-code">
       {% match unified %}{% when Some with (pay) %}
       <div class="tabs" role="presentation">
-        <label for="m-unified">Unified</label><label for="m-onchain">On-chain</label><label for="m-lightning">Lightning</label>
+        <label for="m-unified">Unified</label><label for="m-onchain">On-chain</label><label for="m-lightning">Lightning</label>{% if pay.offer.is_some() %}<label for="m-bolt12">BOLT12</label>{% endif %}
       </div>
       <div class="qr v-unified"><img src="/qr?string={{ pay.uri|urlencode }}&width=300&height=300" alt="Unified payment QR code" width="300" height="300"></div>
       <div class="qr v-onchain"><img loading="lazy" src="/qr?string={{ pay.on_chain_uri|urlencode }}&width=300&height=300" alt="On-chain payment QR code" width="300" height="300"></div>
       <div class="qr v-lightning"><img loading="lazy" src="/qr?string={{ lightning_uri|urlencode }}&width=300&height=300" alt="Lightning invoice QR code" width="300" height="300"></div>
+      {% if let Some(offer) = pay.offer %}<div class="qr v-bolt12"><img loading="lazy" src="/qr?string={{ offer|urlencode }}&width=300&height=300" alt="BOLT12 offer QR code" width="300" height="300"></div>{% endif %}
       {% when None %}
       <div class="qr"><img src="/qr?string={{ lightning_uri|urlencode }}&width=300&height=300" alt="Lightning invoice QR code" width="300" height="300"></div>
       {% endmatch %}
@@ -44,6 +46,13 @@
         <label class="field" for="pay-invoice">Lightning invoice</label>
         <div class="copy"><code id="pay-invoice">{{ invoice }}</code>{% call m::copy_button("pay-invoice") %}{% endcall %}</div>
       </div>
+      {% if let Some(offer) = pay.offer %}
+      <div class="v-bolt12">
+        <label class="field" for="pay-offer">BOLT12 offer</label>
+        <div class="copy"><code id="pay-offer">{{ offer }}</code>{% call m::copy_button("pay-offer") %}{% endcall %}</div>
+        <p class="hint">For wallets that support BOLT12. The offer is for this payment only.</p>
+      </div>
+      {% endif %}
       <div class="row"><span class="waiting">Waiting for payment</span></div>
       {% when None %}
       <label class="field" for="pay-invoice">Lightning invoice</label>

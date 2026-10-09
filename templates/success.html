@@ -1,3 +1,50 @@
 {% extends "base.html" %}
+{% import "macros.html" as m %}
 {% block title %}Success{% endblock %}
-{% block content %}<h1>Success!</h1>{% if warning %}<pre>Your OP_RETURN is very large and is considered non-standard. It may not show up on block explorers until it is mined</pre>{% endif %}<p>Transaction ID:</p><label><a href="https://mempool.space/tx/{{ txid }}">{{ txid }}</a></label>{% endblock %}
+{% block content %}
+<section class="page center wrap">
+  <div class="card status narrow" data-txid="{{ txid }}">
+    <div class="stage success-stage" aria-hidden="true">
+      <div class="chainrow">
+        <div class="prev">
+          <div class="ghost"><div class="block"></div><span class="caption"></span></div>
+          <span class="link"></span>
+          <div class="ghost"><div class="block"></div><span class="caption"></span></div>
+          <span class="link"></span>
+        </div>
+        <div class="drop">
+          {% include "message_tile.html" %}
+          <span class="badge"><svg viewBox="0 0 24 24"><path d="M6 12.5l4 4 8-9"/></svg></span>
+          <span class="sparks"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+          <span class="caption"></span>
+        </div>
+        <div class="shadow"></div>
+      </div>
+    </div>
+    <div aria-live="polite">
+      <h1 id="status-title">Success!</h1>
+      <p class="sub" id="status-sub">Your transaction is broadcast. Your message becomes permanent when it is mined.</p>
+    </div>
+    <ol class="timeline">
+      <li class="done"><span class="icon"></span><div class="text"><span class="title">Payment received</span></div></li>
+      <li class="done"><span class="icon"></span><div class="text"><span class="title">Transaction broadcast</span></div></li>
+      <li class="wait" id="mined-step"><span class="icon"></span><div class="text">
+        <span class="title"><span class="wait-only">Waiting to be mined</span><span class="mined-only">Mined in block <span id="mined-height"></span></span></span>
+        <span class="desc wait-only">Bitcoin blocks come about every 10 minutes.</span>
+      </div></li>
+    </ol>
+    <div class="txid">
+      <label class="field" for="txid">Transaction ID</label>
+      <div class="copy"><code id="txid">{{ txid }}</code>{% call m::copy_button("txid") %}{% endcall %}</div>
+    </div>
+    <div class="actions">
+      <a class="btn" href="https://mempool.space/tx/{{ txid }}" target="_blank" rel="noopener noreferrer">View on mempool.space</a>
+      <a class="btn ghost" href="/">Write another</a>
+    </div>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/assets/javascripts/copy.js"></script>
+<script src="/assets/javascripts/confirm.js"></script>
+{% endblock %}

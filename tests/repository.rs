@@ -616,3 +616,71 @@ async fn finds_unpublished_zaps_by_payment_hash() {
             .is_none()
     );
 }
+
+#[tokio::test]
+async fn pages_through_published_public_requests() {
+    let (_directory, database) = database().await;
+    let repository = Repository::new(database);
+    let mut ids = Vec::new();
+    for (index, (message, no_twitter, published)) in [
+        (&b"first"[..], false, true),
+        (&b"second"[..], false, true),
+        (&b"private"[..], true, true),
+        (&b"unpaid"[..], false, false),
+        (&[0xff, 0x00][..], false, true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let payment_hash = format!("{index:02x}").repeat(32);
+        let bolt11 = format!("lnbcrt1recent{index}");
+        let created = repository
+            .create_invoice_request(
+                &NewRequest {
+                    no_twitter,
+                    ..request(message)
+                },
+                &NewInvoice {
+                    payment_hash: &payment_hash,
+                    bolt11: &bolt11,
+                    ..invoice()
+                },
+            )
+            .await
+            .unwrap();
+        if published {
+            repository
+                .complete_request(
+                    created.request.id,
+                    &CompletedRequest {
+                        txid: &format!("{:02x}", index + 0x10).repeat(32),
+                        chain_fee_sats: 100,
+                        vsize: 150,
+                        profit_sats: None,
+                        btc_price_cents: 0,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        ids.push(created.request.id);
+    }
+
+    let all = repository.recent_public_requests(None, 10).await.unwrap();
+    let messages = all
+        .iter()
+        .map(|recent| recent.message.as_slice())
+        .collect::<Vec<_>>();
+    assert_eq!(messages, [&[0xff, 0x00][..], b"second", b"first"]);
+    assert_eq!(all[0].txid, "14".repeat(32));
+    assert_eq!(all[0].created_at, request(b"").created_at);
+
+    let first_page = repository.recent_public_requests(None, 2).await.unwrap();
+    assert_eq!(first_page.len(), 2);
+    let next_page = repository
+        .recent_public_requests(Some(first_page[1].id), 2)
+        .await
+        .unwrap();
+    assert_eq!(next_page.len(), 1);
+    assert_eq!(next_page[0].id, ids[0]);
+}

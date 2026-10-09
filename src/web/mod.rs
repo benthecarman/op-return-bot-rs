@@ -27,10 +27,10 @@ use tower_http::{
 
 use crate::{
     AppError, AppResult, AppState,
-    domain::PaymentStatus,
+    domain::{OpReturnRequest, PaymentStatus},
     payment_service::{CreateRequest, CreatedPayment},
-    pricing::STANDARD_OP_RETURN_BYTES,
     rate_limit,
+    repository::RecentRequest,
 };
 
 #[derive(Deserialize)]
@@ -73,6 +73,118 @@ fn qr_dimension(value: Option<&str>) -> u32 {
 }
 
 #[derive(Deserialize)]
+struct RecentQuery {
+    before: Option<i64>,
+    limit: Option<u32>,
+}
+
+/// Tiles in the first batch of the home page, and the default page size.
+const RECENT_PAGE: u32 = 24;
+const RECENT_MAX_PAGE: u32 = 100;
+/// A tile shows at most this much of a message.
+const RECENT_PREVIEW_CHARS: usize = 200;
+const RECENT_PREVIEW_HEX_BYTES: usize = 48;
+
+/// One published message in the recent strip. A message that is not UTF-8
+/// text is shown as hex.
+#[derive(Serialize)]
+struct RecentTile {
+    id: i64,
+    txid: String,
+    time: i64,
+    bytes: usize,
+    message: Option<String>,
+    hex: Option<String>,
+    #[serde(skip)]
+    ago: String,
+}
+
+impl RecentTile {
+    fn new(recent: RecentRequest, now: i64) -> Self {
+        let preview = MessagePreview::new(&recent.message);
+        Self {
+            id: recent.id,
+            ago: time_ago(now, recent.created_at),
+            txid: recent.txid,
+            time: recent.created_at,
+            bytes: preview.bytes,
+            message: preview.text,
+            hex: preview.hex,
+        }
+    }
+
+    fn short_txid(&self) -> &str {
+        self.txid.get(..8).unwrap_or(&self.txid)
+    }
+}
+
+/// The start of a message as text, or as hex when it is not UTF-8.
+struct MessagePreview {
+    text: Option<String>,
+    hex: Option<String>,
+    bytes: usize,
+}
+
+impl MessagePreview {
+    fn new(message: &[u8]) -> Self {
+        let (text, hex) = match std::str::from_utf8(message) {
+            Ok(text) => (
+                Some(text.chars().take(RECENT_PREVIEW_CHARS).collect()),
+                None,
+            ),
+            Err(_) => (
+                None,
+                Some(hex::encode(
+                    &message[..message.len().min(RECENT_PREVIEW_HEX_BYTES)],
+                )),
+            ),
+        };
+        Self {
+            text,
+            hex,
+            bytes: message.len(),
+        }
+    }
+}
+
+/// Matches `ago()` in `public/javascripts/home.js`.
+fn time_ago(now: i64, then: i64) -> String {
+    let seconds = now.saturating_sub(then).max(0);
+    if seconds < 3_600 {
+        format!("{} min ago", (seconds / 60).max(1))
+    } else if seconds < 86_400 {
+        let hours = seconds / 3_600;
+        format!("{hours} hour{} ago", if hours == 1 { "" } else { "s" })
+    } else {
+        let days = seconds / 86_400;
+        format!("{days} day{} ago", if days == 1 { "" } else { "s" })
+    }
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+        })
+}
+
+async fn recent_tiles(
+    state: &AppState,
+    before: Option<i64>,
+    limit: u32,
+) -> AppResult<Vec<RecentTile>> {
+    let now = unix_now();
+    Ok(state
+        .repository
+        .recent_public_requests(before, limit)
+        .await?
+        .into_iter()
+        .map(|recent| RecentTile::new(recent, now))
+        .collect())
+}
+
+#[derive(Deserialize)]
 struct WalletNotifyEvent {
     txid: String,
 }
@@ -108,7 +220,8 @@ struct UnifiedResponse {
 #[template(path = "index.html")]
 struct IndexTemplate<'a> {
     onion_url: &'a str,
-    recent_txids: &'a [String],
+    recent: &'a [RecentTile],
+    recent_page: u32,
     error: &'a str,
     message: &'a str,
 }
@@ -121,9 +234,16 @@ struct InvoiceTemplate<'a> {
     message_hash: String,
     invoice: &'a str,
     payment_hash: &'a str,
-    payment_string: String,
-    qr_string: String,
-    unified: bool,
+    lightning_uri: String,
+    unified: Option<UnifiedView>,
+}
+
+/// The payment options of a request that accepts Lightning or on-chain.
+struct UnifiedView {
+    uri: String,
+    address: String,
+    amount_btc: String,
+    on_chain_uri: String,
 }
 
 #[derive(Template)]
@@ -131,13 +251,16 @@ struct InvoiceTemplate<'a> {
 struct SuccessTemplate<'a> {
     onion_url: &'a str,
     txid: &'a str,
-    warning: bool,
+    preview: MessagePreview,
 }
 
 #[derive(Template)]
 #[template(path = "pending.html")]
 struct PendingTemplate<'a> {
     onion_url: &'a str,
+    payment_hash: &'a str,
+    preview: MessagePreview,
+    at_capacity: bool,
 }
 
 #[derive(Template)]
@@ -176,6 +299,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/unified", post(api_unified))
         .route("/api/status/{r_hash}", get(api_status))
         .route("/api/view/{txid}", get(api_view))
+        .route("/api/recent", get(api_recent))
         .route("/api/mempool-limit", get(api_mempool_limit))
         .route("/.well-known/mcp.json", get(mcp_discovery))
         .nest_service("/mcp", crate::mcp::service(state.clone()))
@@ -251,10 +375,11 @@ async fn index(State(state): State<AppState>, headers: HeaderMap) -> AppResult<R
 }
 
 async fn render_index(state: &AppState, error: &str, message: &str) -> AppResult<Html<String>> {
-    let recent = state.repository.recent_public_txids(5).await?;
+    let recent = recent_tiles(state, None, RECENT_PAGE).await?;
     render(IndexTemplate {
         onion_url: state.config.server.onion_url.as_str(),
-        recent_txids: &recent,
+        recent: &recent,
+        recent_page: RECENT_PAGE,
         error,
         message,
     })
@@ -511,28 +636,26 @@ async fn invoice(
         .as_ref()
         .and_then(|payment| payment.txid.as_deref());
     if record.request.payment_status(invoice.paid, on_chain_txid) == PaymentStatus::Pending {
-        return Ok(render(PendingTemplate {
-            onion_url: state.config.server.onion_url.as_str(),
-        })?
-        .into_response());
+        return pending_page(&state, &invoice.payment_hash, &record.request);
     }
-    let payment_string = record.on_chain.as_ref().map_or_else(
-        || invoice.bolt11.clone(),
-        |on_chain| {
-            unified_payment_string(
-                &on_chain.address,
-                on_chain.expected_amount_sats,
-                &invoice.bolt11,
-            )
-        },
-    );
-    // The QR code of a Lightning-only request carries the lightning URI, as
-    // before. The unified string already contains its scheme.
-    let qr_string = if record.on_chain.is_some() {
-        payment_string.clone()
-    } else {
-        format!("lightning:{}", invoice.bolt11)
-    };
+    let unified = record
+        .on_chain
+        .as_ref()
+        .map(|on_chain| -> AppResult<UnifiedView> {
+            let amount_btc = sats_to_btc(on_chain.expected_amount_sats)?;
+            Ok(UnifiedView {
+                uri: unified_payment_string(
+                    &on_chain.address,
+                    on_chain.expected_amount_sats,
+                    &invoice.bolt11,
+                ),
+                // The address keeps its case so that /qr can look it up.
+                on_chain_uri: format!("bitcoin:{}?amount={amount_btc}", on_chain.address),
+                address: on_chain.address.clone(),
+                amount_btc,
+            })
+        })
+        .transpose()?;
     let message = record.request.message_text();
     let page = InvoiceTemplate {
         onion_url: state.config.server.onion_url.as_str(),
@@ -540,9 +663,8 @@ async fn invoice(
         message_hash: hex::encode(Sha256::digest(message.as_bytes())),
         invoice: &invoice.bolt11,
         payment_hash: &invoice.payment_hash,
-        payment_string,
-        qr_string,
-        unified: record.on_chain.is_some(),
+        lightning_uri: format!("lightning:{}", invoice.bolt11),
+        unified,
     };
     Ok(render(page)?.into_response())
 }
@@ -560,7 +682,7 @@ async fn success(
         return Ok(render(SuccessTemplate {
             onion_url: state.config.server.onion_url.as_str(),
             txid,
-            warning: record.request.message.len() > STANDARD_OP_RETURN_BYTES,
+            preview: MessagePreview::new(&record.request.message),
         })?
         .into_response());
     }
@@ -570,13 +692,29 @@ async fn success(
         .as_ref()
         .and_then(|payment| payment.txid.as_deref());
     if record.request.payment_status(invoice_paid, on_chain_txid) == PaymentStatus::Pending {
-        return Ok(render(PendingTemplate {
-            onion_url: state.config.server.onion_url.as_str(),
-        })?
-        .into_response());
+        let payment_hash = record
+            .invoice
+            .as_ref()
+            .map_or(query.r_hash.as_str(), |invoice| &invoice.payment_hash);
+        return pending_page(&state, payment_hash, &record.request);
     }
     // Unpaid: show the home page with status 400, as the Scala service did.
     bad_request_index(&state).await
+}
+
+/// The page shown after payment while the transaction is being broadcast.
+fn pending_page(
+    state: &AppState,
+    payment_hash: &str,
+    request: &OpReturnRequest,
+) -> AppResult<Response> {
+    Ok(render(PendingTemplate {
+        onion_url: state.config.server.onion_url.as_str(),
+        payment_hash,
+        preview: MessagePreview::new(&request.message),
+        at_capacity: state.payments.mempool_limit(),
+    })?
+    .into_response())
 }
 
 async fn bad_request_index(state: &AppState) -> AppResult<Response> {
@@ -617,6 +755,14 @@ async fn api_view(State(state): State<AppState>, Path(txid): Path<String>) -> Re
             .into_response(),
         Err(error) => error.into_response(),
     }
+}
+
+async fn api_recent(
+    State(state): State<AppState>,
+    Query(query): Query<RecentQuery>,
+) -> AppResult<Json<Vec<RecentTile>>> {
+    let limit = query.limit.unwrap_or(RECENT_PAGE).clamp(1, RECENT_MAX_PAGE);
+    Ok(Json(recent_tiles(&state, query.before, limit).await?))
 }
 
 async fn api_mempool_limit(State(state): State<AppState>) -> &'static str {
@@ -866,34 +1012,50 @@ fn sats_to_btc(sats: i64) -> AppResult<String> {
 }
 
 async fn known_qr_payload(state: &AppState, payload: &str) -> AppResult<bool> {
-    let identifier = qr_payment_identifier(payload).ok_or_else(|| {
+    let found = match qr_payment_identifier(payload).ok_or_else(|| {
         AppError::InvalidRequest("QR string is not a payment from this service".to_owned())
-    })?;
-    match state
-        .repository
-        .find_by_invoice_identifier(&identifier)
-        .await
-    {
+    })? {
+        QrPayment::Invoice(identifier) => {
+            state
+                .repository
+                .find_by_invoice_identifier(&identifier)
+                .await
+        }
+        QrPayment::Address(address) => state.repository.find_by_address(&address).await,
+    };
+    match found {
         Ok(_) => Ok(true),
         Err(AppError::NotFound(_)) => Ok(false),
         Err(error) => Err(error),
     }
 }
 
-fn qr_payment_identifier(payload: &str) -> Option<String> {
+#[derive(Debug, Eq, PartialEq)]
+enum QrPayment {
+    Invoice(String),
+    Address(String),
+}
+
+fn qr_payment_identifier(payload: &str) -> Option<QrPayment> {
     let payload = payload.trim();
     let lower = payload.to_ascii_lowercase();
     if lower.starts_with("lnbc") || lower.starts_with("lnbcrt") {
-        return Some(lower);
+        return Some(QrPayment::Invoice(lower));
     }
     if let Some(rest) = lower.strip_prefix("lightning:") {
-        return Some(rest.to_owned());
+        return Some(QrPayment::Invoice(rest.to_owned()));
     }
     if let Some(rest) = lower.strip_prefix("bitcoin:") {
-        return rest
+        if let Some(invoice) = rest
             .split(['?', '&'])
             .find_map(|part| part.strip_prefix("lightning="))
-            .map(ToOwned::to_owned);
+        {
+            return Some(QrPayment::Invoice(invoice.to_owned()));
+        }
+        // An on-chain-only URI. Keep the address as given: legacy addresses
+        // are case-sensitive.
+        let address = payload["bitcoin:".len()..].split('?').next()?;
+        return (!address.is_empty()).then(|| QrPayment::Address(address.to_owned()));
     }
     None
 }
@@ -901,6 +1063,7 @@ fn qr_payment_identifier(payload: &str) -> Option<String> {
 async fn security_headers(request: Request<Body>, next: axum::middleware::Next) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
+    // The success page asks mempool.space when the transaction confirms.
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
@@ -909,7 +1072,7 @@ async fn security_headers(request: Request<Body>, next: axum::middleware::Next) 
              style-src 'self' 'unsafe-inline'; \
              img-src 'self' data:; \
              font-src 'self'; \
-             connect-src 'self'; \
+             connect-src 'self' https://mempool.space; \
              object-src 'none'; \
              base-uri 'self'; \
              form-action 'self'; \
@@ -1064,6 +1227,51 @@ mod tests {
     }
 
     #[test]
+    fn previews_text_and_binary_messages() {
+        let text = RecentTile::new(
+            RecentRequest {
+                id: 7,
+                txid: "ab".repeat(32),
+                created_at: 1_000,
+                message: "é".repeat(RECENT_PREVIEW_CHARS + 10).into_bytes(),
+            },
+            1_000,
+        );
+        assert_eq!(
+            text.message
+                .as_deref()
+                .map(|message| message.chars().count()),
+            Some(RECENT_PREVIEW_CHARS)
+        );
+        assert_eq!(text.bytes, (RECENT_PREVIEW_CHARS + 10) * 2);
+        assert_eq!(text.hex, None);
+        assert_eq!(text.short_txid(), "abababab");
+
+        let binary = RecentTile::new(
+            RecentRequest {
+                id: 8,
+                txid: "cd".repeat(32),
+                created_at: 1_000,
+                message: vec![0xff; RECENT_PREVIEW_HEX_BYTES + 1],
+            },
+            1_000,
+        );
+        assert_eq!(binary.message, None);
+        assert_eq!(binary.hex, Some("ff".repeat(RECENT_PREVIEW_HEX_BYTES)));
+    }
+
+    #[test]
+    fn describes_message_age() {
+        assert_eq!(time_ago(1_000, 1_000), "1 min ago");
+        assert_eq!(time_ago(10_000, 10_000 - 59 * 60), "59 min ago");
+        assert_eq!(time_ago(10_000, 10_000 - 3_600), "1 hour ago");
+        assert_eq!(time_ago(100_000, 100_000 - 7_200), "2 hours ago");
+        assert_eq!(time_ago(1_000_000, 1_000_000 - 3 * 86_400), "3 days ago");
+        // A clock that moved backwards still reads as just now.
+        assert_eq!(time_ago(1_000, 2_000), "1 min ago");
+    }
+
+    #[test]
     fn defaults_qr_dimensions_like_the_scala_service() {
         assert_eq!(qr_dimension(None), 300);
         assert_eq!(qr_dimension(Some("abc")), 300);
@@ -1095,19 +1303,23 @@ mod tests {
 
     #[test]
     fn extracts_invoice_identifiers_from_qr_payloads() {
+        let invoice = |value: &str| Some(QrPayment::Invoice(value.to_owned()));
+        assert_eq!(qr_payment_identifier("lnbc10u1abc"), invoice("lnbc10u1abc"));
         assert_eq!(
-            qr_payment_identifier("lnbc10u1abc").as_deref(),
-            Some("lnbc10u1abc")
+            qr_payment_identifier("lightning:LNBCRT1TEST"),
+            invoice("lnbcrt1test")
         );
         assert_eq!(
-            qr_payment_identifier("lightning:LNBCRT1TEST").as_deref(),
-            Some("lnbcrt1test")
+            qr_payment_identifier("bitcoin:bcrt1qtest?amount=0.00001234&lightning=lnbcrt1invoice"),
+            invoice("lnbcrt1invoice")
         );
         assert_eq!(
-            qr_payment_identifier("bitcoin:bcrt1qtest?amount=0.00001234&lightning=lnbcrt1invoice")
-                .as_deref(),
-            Some("lnbcrt1invoice")
+            qr_payment_identifier("bitcoin:1BoatSLRHtKNngkdXEeobR76b53LETtpyT?amount=0.001"),
+            Some(QrPayment::Address(
+                "1BoatSLRHtKNngkdXEeobR76b53LETtpyT".to_owned()
+            ))
         );
+        assert_eq!(qr_payment_identifier("bitcoin:?amount=1"), None);
         assert_eq!(qr_payment_identifier("https://evil.example"), None);
     }
 

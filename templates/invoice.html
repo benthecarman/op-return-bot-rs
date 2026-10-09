@@ -1,9 +1,67 @@
 {% extends "base.html" %}
+{% import "macros.html" as m %}
 {% block title %}Invoice{% endblock %}
 {% block content %}
-<script src="/assets/javascripts/checkInvoice.js"></script><script>const rhash = "{{ payment_hash }}"; setInterval(queryAPI, 1000, rhash);</script>
-<h1>Invoice</h1><h3>Message: {{ message }}</h3><h4>SHA256: {{ message_hash }}</h4>
-<img id="barcode" src="/qr?string={{ qr_string|urlencode }}&width=300&height=300" alt="" title="invoice" width="300" height="300"><br>
-<code>{{ payment_string }}</code><br>
-{% if !unified %}<form method="get" action="/invoice"><input type="text" name="invoice" hidden value="{{ invoice }}"><input type="submit" value="Paid"></form>{% endif %}
+<section class="page center wrap">
+  <div class="card pay">
+    {% match unified %}{% when Some with (_) %}
+    <input class="method" type="radio" name="method" id="m-unified" checked>
+    <input class="method" type="radio" name="method" id="m-onchain">
+    <input class="method" type="radio" name="method" id="m-lightning">
+    {% when None %}{% endmatch %}
+    <div class="pay-code">
+      {% match unified %}{% when Some with (pay) %}
+      <div class="tabs" role="presentation">
+        <label for="m-unified">Unified</label><label for="m-onchain">On-chain</label><label for="m-lightning">Lightning</label>
+      </div>
+      <div class="qr v-unified"><img src="/qr?string={{ pay.uri|urlencode }}&width=300&height=300" alt="Unified payment QR code" width="300" height="300"></div>
+      <div class="qr v-onchain"><img loading="lazy" src="/qr?string={{ pay.on_chain_uri|urlencode }}&width=300&height=300" alt="On-chain payment QR code" width="300" height="300"></div>
+      <div class="qr v-lightning"><img loading="lazy" src="/qr?string={{ lightning_uri|urlencode }}&width=300&height=300" alt="Lightning invoice QR code" width="300" height="300"></div>
+      {% when None %}
+      <div class="qr"><img src="/qr?string={{ lightning_uri|urlencode }}&width=300&height=300" alt="Lightning invoice QR code" width="300" height="300"></div>
+      {% endmatch %}
+    </div>
+    <div class="pay-info">
+      <h1>Pay to publish</h1>
+      <p class="sub">Scan the code or copy the payment details. This page moves on when the payment arrives.</p>
+      <dl>
+        <dt>Message</dt><dd class="message">{{ message }}</dd>
+        <dt>SHA256</dt><dd class="mono">{{ message_hash }}</dd>
+      </dl>
+      {% match unified %}{% when Some with (pay) %}
+      <div class="v-unified">
+        <label class="field" for="pay-unified">Payment request</label>
+        <div class="copy"><code id="pay-unified">{{ pay.uri }}</code>{% call m::copy_button("pay-unified") %}{% endcall %}</div>
+        <p class="hint">Your wallet pays with Lightning or on-chain, whichever it supports.</p>
+      </div>
+      <div class="v-onchain">
+        <label class="field" for="pay-address">Address</label>
+        <div class="copy"><code id="pay-address">{{ pay.address }}</code>{% call m::copy_button("pay-address") %}{% endcall %}</div>
+        <label class="field" for="pay-amount">Amount (BTC)</label>
+        <div class="copy"><code id="pay-amount">{{ pay.amount_btc }}</code>{% call m::copy_button("pay-amount") %}{% endcall %}</div>
+      </div>
+      <div class="v-lightning">
+        <label class="field" for="pay-invoice">Lightning invoice</label>
+        <div class="copy"><code id="pay-invoice">{{ invoice }}</code>{% call m::copy_button("pay-invoice") %}{% endcall %}</div>
+      </div>
+      <div class="row"><span class="waiting">Waiting for payment</span></div>
+      {% when None %}
+      <label class="field" for="pay-invoice">Lightning invoice</label>
+      <div class="copy"><code id="pay-invoice">{{ invoice }}</code>{% call m::copy_button("pay-invoice") %}{% endcall %}</div>
+      <div class="row">
+        <span class="waiting">Waiting for payment</span>
+        <form method="get" action="/invoice"><input type="hidden" name="invoice" value="{{ invoice }}"><button class="btn ghost" type="submit">Paid</button></form>
+      </div>
+      {% endmatch %}
+    </div>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/assets/javascripts/copy.js"></script>
+<script src="/assets/javascripts/checkInvoice.js"></script>
+<script>
+const rhash = "{{ payment_hash }}";
+setInterval(queryAPI, 1000, rhash);
+</script>
 {% endblock %}

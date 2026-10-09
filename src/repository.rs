@@ -97,6 +97,15 @@ pub struct CompletedRequest<'a> {
     pub btc_price_cents: i64,
 }
 
+/// A published public request, as listed on the home page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecentRequest {
+    pub id: i64,
+    pub txid: String,
+    pub created_at: i64,
+    pub message: Vec<u8>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AccountingReport {
     pub completed_requests: i64,
@@ -150,6 +159,27 @@ impl TryFrom<RequestRow> for OpReturnRequest {
             vsize: row.vsize,
             closed: row.closed,
             btc_price_cents: row.btc_price,
+        })
+    }
+}
+
+#[derive(FromRow)]
+struct RecentRow {
+    id: i64,
+    txid: String,
+    time: i64,
+    message_bytes: Vec<u8>,
+}
+
+impl TryFrom<RecentRow> for RecentRequest {
+    type Error = AppError;
+
+    fn try_from(row: RecentRow) -> AppResult<Self> {
+        Ok(Self {
+            id: row.id,
+            txid: row.txid,
+            created_at: row.time,
+            message: decode_legacy_bytes(&row.message_bytes)?,
         })
     }
 }
@@ -353,16 +383,23 @@ impl Repository {
         )
     }
 
-    pub async fn recent_public_txids(&self, limit: u32) -> AppResult<Vec<String>> {
-        let rows = sqlx::query_scalar::<_, String>(
-            "SELECT txid FROM op_return_requests \
-             WHERE txid IS NOT NULL AND no_twitter = 0 \
+    /// Published public requests, newest first. `before` is the request ID
+    /// that a page starts after, so callers can page back through history.
+    pub async fn recent_public_requests(
+        &self,
+        before: Option<i64>,
+        limit: u32,
+    ) -> AppResult<Vec<RecentRequest>> {
+        let rows = sqlx::query_as::<_, RecentRow>(
+            "SELECT id, txid, time, message_bytes FROM op_return_requests \
+             WHERE txid IS NOT NULL AND no_twitter = 0 AND id < ? \
              ORDER BY id DESC LIMIT ?",
         )
+        .bind(before.unwrap_or(i64::MAX))
         .bind(i64::from(limit))
         .fetch_all(self.database.pool())
         .await?;
-        Ok(rows)
+        rows.into_iter().map(TryInto::try_into).collect()
     }
 
     pub async fn mark_invoice_paid(&self, payment_hash: &str) -> AppResult<bool> {

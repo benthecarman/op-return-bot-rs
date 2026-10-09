@@ -1,0 +1,1 @@
+<div class="block g0"><span class="ago">Your message</span>{% match preview.text %}{% when Some with (text) %}<span class="msg">{{ text }}</span>{% when None %}<span class="msg hex">{{ preview.hex.as_deref().unwrap_or_default() }}</span>{% endmatch %}<span class="foot"><span>OP_RETURN</span><span>{{ preview.bytes }} B</span></span></div>

@@ -1,30 +1,38 @@
 {% extends "base.html" %}
+{% block page %}create{% endblock %}
 {% block content %}
-{% if !error.is_empty() %}<div class="text-danger">{{ error }}</div>{% endif %}
-<h2>OP_RETURN Bot</h2>
-<p>An OP_RETURN is a provably prune-able output, these outputs do not need to be stored in the UTXO set but will be permanently part of the blockchain. These outputs can be used to add arbitrary data to the blockchain, creating a timestamp that it existed at a given time.</p>
-<p>OP_RETURN Bot will create an OP_RETURN output for you, you just need to pay the fees.</p>
-<hr>
-<h3>Create OP_RETURN</h3>
-<div class="jumbotron"><div class="row"><div class="col-md-4"></div><div class="col-md-4">
-  <form method="post" action="/createRequest">
-    <div class="form-group"><label for="message">Message:</label><textarea minlength="1" class="form-control" placeholder="Chancellor on the brink..." name="message" id="message">{{ message }}</textarea></div>
-    <div class="form-group form-check" style="float:right">
-      <label class="form-check-label" for="noTwitter"><input class="form-check-input" type="checkbox" name="noTwitter" id="noTwitter" value="true"> Private</label>
-      <button class="private-help" type="button" aria-label="Private messages are not posted to Twitter or Nostr" data-tooltip="The message won't be posted to Twitter or Nostr">
-        <svg class="private-help-icon" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"></path>
-          <path d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533z"></path>
-          <circle cx="8" cy="4.5" r="1"></circle>
-        </svg>
-      </button>
+<section class="main wrap">
+  <form class="card" method="post" action="/createRequest">
+    <h1>Create an OP_RETURN</h1>
+    <p class="sub">Write any message into the Bitcoin blockchain. You only pay the fees.</p>
+    {% if !error.is_empty() %}<div class="error">{{ error }}</div>{% endif %}
+    <textarea minlength="1" placeholder="Chancellor on the brink..." name="message" id="message" aria-label="Message" required>{{ message }}</textarea>
+    <div class="meta"><span>Stored in an OP_RETURN output</span><span id="length"></span></div>
+    <div class="row">
+      <label class="check"><input type="checkbox" name="noTwitter" id="noTwitter" value="true"> Private <small>— not posted to Twitter or Nostr</small></label>
+      <button class="btn" type="submit">Create invoice</button>
     </div>
-    <br><br><button style="float:right" type="submit" class="btn btn-primary">Create Invoice</button>
   </form>
-</div><div class="col-md-4"></div></div></div>
-<hr>
-<h3>NIP-05</h3><p>Looking to set up a NIP-05 identity?</p><a href="/nip5"><button class="btn btn-primary">Click here</button></a><br><br><br>
-<h3>Recent Transactions</h3><table class="table table-hover"><tbody>
-{% for txid in recent_txids %}<tr><td><a style="font-family:monospace" href="https://mempool.space/tx/{{ txid }}" target="_blank" rel="noopener noreferrer">{{ txid }}</a></td></tr>{% endfor %}
-</tbody></table>
+  <div class="side">
+    <div class="card">
+      <h2>What is an OP_RETURN?</h2>
+      <p>A provably prunable output. Nodes do not keep it in the UTXO set, but it stays in the blockchain for good. It proves your data existed at a given time.</p>
+    </div>
+    <div class="card">
+      <h2>NIP-05</h2>
+      <p>Get a Nostr identifier like <span class="hl">bob@opreturnbot.com</span>, written into the blockchain.</p>
+      <a class="btn ghost" href="/nip5">Set up NIP-05</a>
+    </div>
+  </div>
+</section>
+{% if !recent.is_empty() %}
+<section class="chain">
+  <div class="chain-head wrap"><h2>Recent OP_RETURNs</h2><div class="ctl"><button type="button" id="recent-prev" aria-label="Newer">‹</button><button type="button" id="recent-next" aria-label="Older">›</button></div></div>
+  <div class="wrap"><div class="strip"><div class="blocks" id="recent" data-page="{{ recent_page }}">
+    {% for tile in recent %}<a class="block g{{ loop.index0 % 6 }}" data-id="{{ tile.id }}" href="https://mempool.space/tx/{{ tile.txid }}" target="_blank" rel="noopener noreferrer"><span class="ago">{{ tile.ago }}</span>{% match tile.message %}{% when Some with (text) %}<span class="msg">{{ text }}</span>{% when None %}<span class="msg hex">{{ tile.hex.as_deref().unwrap_or_default() }}</span>{% endmatch %}<span class="foot"><span class="id">{{ tile.short_txid() }}…</span><span class="sz">{{ tile.bytes }} B</span></span></a>
+    {% endfor %}
+  </div></div></div>
+</section>
+{% endif %}
 {% endblock %}
+{% block scripts %}<script src="/assets/javascripts/home.js"></script>{% endblock %}

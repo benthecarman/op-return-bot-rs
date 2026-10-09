@@ -1,4 +1,56 @@
 {% extends "base.html" %}
 {% block title %}Payment received{% endblock %}
-{% block refresh %}<meta http-equiv="refresh" content="2">{% endblock %}
-{% block content %}<h1>Payment received</h1><p>Your payment succeeded. The broadcast of your transaction is in progress.</p><p>This page refreshes automatically until the transaction ID is available.</p>{% endblock %}
+{% block refresh %}<noscript><meta http-equiv="refresh" content="2"></noscript>{% endblock %}
+{% block content %}
+<section class="page center wrap">
+  <div class="card status narrow">
+    <div class="stage pending-stage" aria-hidden="true">
+      <div class="bits"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="lift">{% include "message_tile.html" %}<span class="sheen"></span></div>
+      <div class="shadow"></div>
+    </div>
+    <h1>Payment received</h1>
+    <p class="sub">Your payment succeeded. The broadcast of your transaction is in progress.</p>
+    <ol class="timeline" aria-live="polite">
+      <li class="done"><span class="icon"></span><div class="text"><span class="title">Payment received</span></div></li>
+      <li class="active{% if at_capacity %} full{% endif %}" id="broadcast-step"><span class="icon"></span><div class="text">
+        <span class="title"><span class="normal-only">Broadcasting your transaction</span><span class="full-only">Waiting for the next block</span><span class="pill full-only">At capacity</span></span>
+        <span class="desc normal-only">This usually takes a few seconds.</span>
+        <span class="desc full-only">OP_RETURN Bot has too many unconfirmed transactions, so it is processing requests slowly. Yours goes out after the next block. Your payment is safe.</span>
+      </div></li>
+      <li><span class="icon"></span><div class="text"><span class="title">Mined</span><span class="desc">Bitcoin blocks come about every 10 minutes.</span></div></li>
+    </ol>
+    <div class="card-foot"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>This page updates on its own. You can close it and open this link later.</div>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  var rHash = "{{ payment_hash }}";
+  function check() {
+    fetch("/api/status/" + encodeURIComponent(rHash))
+      .then(function (response) { return response.ok ? response.text() : null; })
+      .then(function (text) {
+        // "null" means paid but not broadcast yet.
+        if (text && text !== "null") window.location.href = "/success?rHash=" + encodeURIComponent(rHash);
+      })
+      .catch(function () {});
+  }
+  setInterval(check, 1500);
+
+  // While Bitcoin Core's mempool chain limit is hit, broadcasts wait for
+  // the next block. Say so.
+  var step = document.getElementById("broadcast-step");
+  function capacity() {
+    fetch("/api/mempool-limit")
+      .then(function (response) { return response.ok ? response.text() : null; })
+      .then(function (text) {
+        if (text !== null) step.classList.toggle("full", text.trim() === "true");
+      })
+      .catch(function () {});
+  }
+  setInterval(capacity, 10000);
+})();
+</script>
+{% endblock %}

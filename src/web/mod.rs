@@ -2,6 +2,7 @@ use std::{
     io::Cursor,
     net::{IpAddr, SocketAddr},
     str::FromStr,
+    sync::OnceLock,
 };
 
 use askama::Template;
@@ -288,7 +289,39 @@ struct Nip5Template<'a> {
     pubkey: &'a str,
 }
 
+/// A short hash of the files under `public/`. Asset URLs carry it, so that
+/// browsers fetch new assets after a deploy. The Nix store dates every file
+/// to 1970, which otherwise lets browsers cache old assets for years.
+pub fn asset_version() -> &'static str {
+    static VERSION: OnceLock<String> = OnceLock::new();
+    VERSION.get_or_init(|| {
+        let mut hasher = Sha256::new();
+        hash_directory(std::path::Path::new("public"), &mut hasher);
+        hex::encode(&hasher.finalize()[..6])
+    })
+}
+
+fn hash_directory(directory: &std::path::Path, hasher: &mut Sha256) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    let mut paths = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .collect::<Vec<_>>();
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            hash_directory(&path, hasher);
+        } else if let Ok(bytes) = std::fs::read(&path) {
+            hasher.update(path.to_string_lossy().as_bytes());
+            hasher.update(&bytes);
+        }
+    }
+}
+
 pub fn router(state: AppState) -> Router {
+    // Hash the assets now rather than on the first page request.
+    asset_version();
     let request_id_header = http::HeaderName::from_static("x-request-id");
     let cors = cors_layer(&state);
 

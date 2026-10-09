@@ -45,6 +45,6 @@
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/assets/javascripts/copy.js"></script>
-<script src="/assets/javascripts/confirm.js"></script>
+<script src="/assets/javascripts/copy.js?v={{ crate::web::asset_version() }}"></script>
+<script src="/assets/javascripts/confirm.js?v={{ crate::web::asset_version() }}"></script>
 {% endblock %}

@@ -35,4 +35,4 @@
 </section>
 {% endif %}
 {% endblock %}
-{% block scripts %}<script src="/assets/javascripts/home.js"></script>{% endblock %}
+{% block scripts %}<script src="/assets/javascripts/home.js?v={{ crate::web::asset_version() }}"></script>{% endblock %}

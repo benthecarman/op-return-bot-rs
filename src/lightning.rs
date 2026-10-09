@@ -418,9 +418,10 @@ fn offer_payment(payment: Payment) -> Option<OfferPayment> {
     })
 }
 
+/// Prefers a clearnet address, which more peers can reach, over an onion.
 fn preferred_node_uri(uris: Vec<String>) -> Option<String> {
     uris.iter()
-        .find(|uri| uri.contains(".onion"))
+        .find(|uri| !uri.contains(".onion"))
         .cloned()
         .or_else(|| uris.into_iter().next())
 }
@@ -521,13 +522,17 @@ mod tests {
     }
 
     #[test]
-    fn prefers_tor_node_uri() {
+    fn prefers_clearnet_node_uri() {
         assert_eq!(
             preferred_node_uri(vec![
-                "node@example.com:9735".to_owned(),
-                "node@example.onion:9735".to_owned()
+                "node@example.onion:9735".to_owned(),
+                "node@example.com:9735".to_owned()
             ])
             .as_deref(),
+            Some("node@example.com:9735")
+        );
+        assert_eq!(
+            preferred_node_uri(vec!["node@example.onion:9735".to_owned()]).as_deref(),
             Some("node@example.onion:9735")
         );
     }

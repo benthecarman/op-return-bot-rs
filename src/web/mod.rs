@@ -446,8 +446,8 @@ async fn create_request(
     };
     let from_file = incoming.from_file;
     if let Err(error) = state
-        .moderator
-        .screen_if_file(
+        .social
+        .screen_file(
             from_file,
             &incoming.message,
             state.config.payments.message_max_bytes,
@@ -659,8 +659,8 @@ async fn api_create(
     check_create_limit(&state, &headers, Some(peer))?;
     let form = parse_create_request(request).await?;
     state
-        .moderator
-        .screen_if_file(
+        .social
+        .screen_file(
             form.from_file,
             &form.message,
             state.config.payments.message_max_bytes,
@@ -683,8 +683,8 @@ async fn api_unified(
     check_create_limit(&state, &headers, Some(peer))?;
     let form = parse_create_request(request).await?;
     state
-        .moderator
-        .screen_if_file(
+        .social
+        .screen_file(
             form.from_file,
             &form.message,
             state.config.payments.message_max_bytes,

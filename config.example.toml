@@ -65,7 +65,8 @@ esplora_url = "https://mempool.space/api/"
 slipstream_url = "https://slipstream.mara.com/api/transactions"
 
 # File uploads are refused until url and api_key_file are both set.
-# Set allow_unscreened = true to publish files without this check.
+# Social posts go out until then.
+# Set allow_unscreened = true to skip both checks.
 [moderation]
 allow_unscreened = false
 url = "https://maple.tail56f8c.ts.net/v1/systemone"

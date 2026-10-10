@@ -7,6 +7,7 @@ use reqwest_oauth1::{OAuthClientProvider, Secrets};
 use crate::{
     AppConfig, AppError, AppResult,
     config::{NostrConfig, TelegramConfig, TwitterConfig},
+    moderation::Moderator,
     payment_service::{CreateRequest, PaymentService},
     repository::{AccountingReport, PaymentRecord, Repository},
 };
@@ -21,6 +22,7 @@ pub struct SocialPublisher {
     nostr: Option<NostrPublisher>,
     twitter: Option<TwitterPublisher>,
     telegram: Option<TelegramPublisher>,
+    moderator: Moderator,
 }
 
 #[derive(Clone)]
@@ -92,7 +94,21 @@ impl SocialPublisher {
             nostr: NostrPublisher::connect(&config.nostr).await?,
             twitter: TwitterPublisher::connect(&config.twitter).await?,
             telegram: TelegramPublisher::connect(&config.telegram).await?,
+            moderator: Moderator::connect(&config.moderation).await?,
         })
+    }
+
+    /// Refuses a file the decision service will not publish. Typed text is
+    /// left for the tweet check at broadcast time.
+    pub async fn screen_file(
+        &self,
+        from_file: bool,
+        bytes: &[u8],
+        max_bytes: usize,
+    ) -> AppResult<()> {
+        self.moderator
+            .screen_if_file(from_file, bytes, max_bytes)
+            .await
     }
 
     /// Announces a completed request. `nip5_public_key` is the buyer of a
@@ -110,7 +126,10 @@ impl SocialPublisher {
             .is_ok_and(|value| value.is_object());
         let mut nostr_note = None;
         let mut tweet_id = None;
-        if !record.request.no_twitter && !is_json_object {
+        let announce = !record.request.no_twitter
+            && !is_json_object
+            && (self.nostr.is_some() || self.twitter.is_some());
+        if announce && self.moderator.allows_post(&message).await {
             if let Some(nostr) = &self.nostr {
                 let tagged = tagged_public_key(nip5_public_key, &message);
                 match nostr.publish(&message, &link, tagged).await {
@@ -126,6 +145,8 @@ impl SocialPublisher {
                     Err(error) => tracing::error!(%error, %txid, "could not publish tweet"),
                 }
             }
+        } else if announce {
+            tracing::info!(%txid, "skipped Twitter and Nostr after the content check");
         }
         if let Some(telegram) = &self.telegram
             && let Err(error) = telegram

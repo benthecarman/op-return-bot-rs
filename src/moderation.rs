@@ -1,7 +1,9 @@
-//! Screen a file upload before it can be written.
+//! Screen a file before it is stored, and a public message before it is posted.
 //!
-//! Typed text is not screened. A file is stored only when the decision
-//! service chooses `allow` with confidence at or above the configured floor.
+//! A file is stored only when the decision service chooses `allow` with
+//! confidence at or above the configured floor. A typed message is always
+//! stored. Twitter and Nostr hear about it only when a separate decision
+//! allows the post.
 
 use std::{collections::BTreeMap, time::Duration};
 
@@ -13,8 +15,11 @@ use url::Url;
 use crate::{AppError, AppResult, config::ModerationConfig};
 
 const PUBLISH_INSTRUCTIONS: &str = "Can this be published on a public permanent ledger?";
-const ALLOW_CRITERION: &str = "Content that is legal to publish.";
-const REFUSE_CRITERION: &str = "Sexual content involving anyone under 18, or other content that is illegal to publish or possess.";
+const PUBLISH_ALLOW: &str = "Content that is legal to publish.";
+const PUBLISH_REFUSE: &str = "Sexual content involving anyone under 18, or other content that is illegal to publish or possess.";
+const POST_INSTRUCTIONS: &str = "Can this be posted from a public social account?";
+const POST_ALLOW: &str = "Ordinary speech, including rude or political speech.";
+const POST_REFUSE: &str = "A slur, sexual content involving anyone under 18, or other content that would get a public social account banned.";
 const IMAGE_NOTE: &str = "The attached image is the file to publish.";
 const PDF_NO_TEXT: &str = "This PDF has no text layer. The attached images are its pages.";
 /// A text layer longer than this is not sent. The file is refused instead,
@@ -26,14 +31,15 @@ const TARGET_LONG_SIDE: f32 = 1024.0;
 const MAX_PIXEL: f32 = 2048.0;
 const MAX_PDF_DEPTH: usize = 32;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Moderator {
     inner: Mode,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 enum Mode {
     Skip,
+    #[default]
     Closed,
     Live(Box<LiveModerator>),
 }
@@ -78,11 +84,13 @@ struct Submission {
 impl Moderator {
     pub async fn connect(config: &ModerationConfig) -> AppResult<Self> {
         if config.allow_unscreened {
-            tracing::warn!("file uploads are accepted without a content check");
+            tracing::warn!("files and social posts are accepted without a content check");
             return Ok(Self { inner: Mode::Skip });
         }
         let (Some(url), Some(path)) = (&config.url, &config.api_key_file) else {
-            tracing::warn!("file uploads are refused until moderation is configured");
+            tracing::warn!(
+                "file uploads are refused and social posts are sent until moderation is configured"
+            );
             return Ok(Self {
                 inner: Mode::Closed,
             });
@@ -143,6 +151,23 @@ impl Moderator {
             Mode::Live(live) => live.screen(bytes).await,
         }
     }
+
+    /// Whether Twitter and Nostr may announce `text`.
+    ///
+    /// An unconfigured check posts. A configured check posts only on an
+    /// allow at or above the floor. A refusal, a low confidence, or a
+    /// check that does not answer skips the posts. The transaction is
+    /// unaffected.
+    #[must_use]
+    pub async fn allows_post(&self, text: &str) -> bool {
+        if text.trim().is_empty() {
+            return true;
+        }
+        match &self.inner {
+            Mode::Skip | Mode::Closed => true,
+            Mode::Live(live) => live.allows_post(text).await,
+        }
+    }
 }
 
 impl LiveModerator {
@@ -173,7 +198,11 @@ impl LiveModerator {
             .client
             .post(self.url.clone())
             .bearer_auth(&self.api_key)
-            .json(&request_body(&submission.state, &submission.files))
+            .json(&request_body(
+                &submission.state,
+                &submission.files,
+                &PUBLISH,
+            ))
             .send()
             .await
             .map_err(|error| {
@@ -189,22 +218,86 @@ impl LiveModerator {
             tracing::warn!("file screen returned a decision that could not be read");
             AppError::FileCheckFailed
         })?;
-        interpret_decision(&body, self.floor)
+        match interpret_decision(&body, "publish", self.floor, "file screen") {
+            Verdict::Allow => Ok(()),
+            Verdict::Refuse => Err(AppError::Unpublishable),
+            Verdict::Unusable => Err(AppError::FileCheckFailed),
+        }
+    }
+
+    async fn allows_post(&self, text: &str) -> bool {
+        let response = match self
+            .client
+            .post(self.url.clone())
+            .bearer_auth(&self.api_key)
+            .json(&request_body(text, &[], &POST))
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                tracing::warn!(error = %error, "social post check failed");
+                return false;
+            }
+        };
+        let status = response.status();
+        if !status.is_success() {
+            tracing::warn!(%status, "social post check was rejected");
+            return false;
+        }
+        let body = match response.json().await {
+            Ok(body) => body,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "social post check returned a decision that could not be read"
+                );
+                return false;
+            }
+        };
+        interpret_decision(&body, POST.name, self.floor, "social post check") == Verdict::Allow
     }
 }
 
-fn request_body(state: &str, files: &[String]) -> serde_json::Value {
+struct Question {
+    name: &'static str,
+    instructions: &'static str,
+    allow: &'static str,
+    refuse: &'static str,
+}
+
+const PUBLISH: Question = Question {
+    name: "publish",
+    instructions: PUBLISH_INSTRUCTIONS,
+    allow: PUBLISH_ALLOW,
+    refuse: PUBLISH_REFUSE,
+};
+
+const POST: Question = Question {
+    name: "post",
+    instructions: POST_INSTRUCTIONS,
+    allow: POST_ALLOW,
+    refuse: POST_REFUSE,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Verdict {
+    Allow,
+    Refuse,
+    Unusable,
+}
+
+fn request_body(state: &str, files: &[String], question: &Question) -> serde_json::Value {
     let mut body = serde_json::json!({
         "state": state,
-        "questions": {
-            "publish": {
-                "type": "choice",
-                "instructions": PUBLISH_INSTRUCTIONS,
-                "criteria": {
-                    "allow": ALLOW_CRITERION,
-                    "refuse": REFUSE_CRITERION
-                }
-            }
+        "questions": {}
+    });
+    body["questions"][question.name] = serde_json::json!({
+        "type": "choice",
+        "instructions": question.instructions,
+        "criteria": {
+            "allow": question.allow,
+            "refuse": question.refuse
         }
     });
     if !files.is_empty() {
@@ -225,38 +318,42 @@ struct AnswerBody {
     confidence: Option<f64>,
 }
 
-fn interpret_decision(body: &DecisionBody, floor: f64) -> AppResult<()> {
-    let Some(answer) = body.answers.get("publish") else {
-        tracing::warn!("file screen returned no publish decision");
-        return Err(AppError::FileCheckFailed);
+fn interpret_decision(body: &DecisionBody, question: &str, floor: f64, check: &str) -> Verdict {
+    let Some(answer) = body.answers.get(question) else {
+        tracing::warn!(check, "content check returned no decision");
+        return Verdict::Unusable;
     };
     let (Some(choice), Some(confidence)) = (&answer.choice, answer.confidence) else {
-        tracing::warn!("file screen returned a decision without a choice or confidence");
-        return Err(AppError::FileCheckFailed);
+        tracing::warn!(
+            check,
+            "content check returned a decision without a choice or confidence"
+        );
+        return Verdict::Unusable;
     };
     if !confidence.is_finite() || !(0.0..=1.0).contains(&confidence) {
-        tracing::warn!("file screen returned a confidence outside 0 to 1");
-        return Err(AppError::FileCheckFailed);
+        tracing::warn!(check, "content check returned a confidence outside 0 to 1");
+        return Verdict::Unusable;
     }
     if choice == "refuse" {
-        tracing::info!(confidence, "file screen refused the upload");
-        return Err(AppError::Unpublishable);
+        tracing::info!(check, confidence, "content check refused");
+        return Verdict::Refuse;
     }
     if choice == "allow" && confidence >= floor {
-        tracing::info!(confidence, "file screen allowed the upload");
-        return Ok(());
+        tracing::info!(check, confidence, "content check allowed");
+        return Verdict::Allow;
     }
     if choice == "allow" {
         tracing::info!(
+            check,
             confidence,
             floor,
-            "file screen confidence was below the floor"
+            "content check confidence was below the floor"
         );
-        return Err(AppError::Unpublishable);
+        return Verdict::Refuse;
     }
     let shown: String = choice.chars().take(32).collect();
-    tracing::warn!(choice = %shown, "file screen returned an unusable choice");
-    Err(AppError::FileCheckFailed)
+    tracing::warn!(check, choice = %shown, "content check returned an unusable choice");
+    Verdict::Unusable
 }
 
 fn prepare(bytes: &[u8], max_pages: usize) -> AppResult<Submission> {
@@ -549,12 +646,6 @@ mod tests {
         address
     }
 
-    fn allow_body() -> Json<serde_json::Value> {
-        Json(json!({
-            "answers": { "publish": { "choice": "allow", "confidence": 0.95 } }
-        }))
-    }
-
     async fn record_and_allow(
         State(seen): State<Arc<Mutex<Option<serde_json::Value>>>>,
         headers: HeaderMap,
@@ -566,8 +657,17 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("Bearer test-key")
         );
-        *seen.lock().unwrap() = Some(body);
-        allow_body()
+        *seen.lock().unwrap() = Some(body.clone());
+        let mut answers = serde_json::Map::new();
+        if let Some(questions) = body["questions"].as_object() {
+            for name in questions.keys() {
+                answers.insert(
+                    name.clone(),
+                    json!({ "choice": "allow", "confidence": 0.95 }),
+                );
+            }
+        }
+        Json(json!({ "answers": answers }))
     }
 
     fn pdf_with_pages(texts: &[&str]) -> Vec<u8> {
@@ -653,42 +753,30 @@ mod tests {
         assert_eq!(classify(b"\xff\x00"), FileKind::Unsupported);
     }
 
+    fn verdict(choice: Option<&str>, confidence: Option<f64>) -> Verdict {
+        interpret_decision(&answer(choice, confidence), "publish", 0.9, "file screen")
+    }
+
     #[test]
     fn allows_only_a_confident_allow() {
-        interpret_decision(&answer(Some("allow"), Some(0.9)), 0.9).unwrap();
-        assert!(matches!(
-            interpret_decision(&answer(Some("allow"), Some(0.89)), 0.9),
-            Err(AppError::Unpublishable)
-        ));
-        assert!(matches!(
-            interpret_decision(&answer(Some("refuse"), Some(0.99)), 0.9),
-            Err(AppError::Unpublishable)
-        ));
-        assert!(matches!(
-            interpret_decision(&answer(Some("allow"), None), 0.9),
-            Err(AppError::FileCheckFailed)
-        ));
-        assert!(matches!(
-            interpret_decision(&answer(Some("maybe"), Some(1.0)), 0.9),
-            Err(AppError::FileCheckFailed)
-        ));
-        assert!(matches!(
-            interpret_decision(&answer(Some("allow"), Some(1.1)), 0.9),
-            Err(AppError::FileCheckFailed)
-        ));
-        assert!(matches!(
-            interpret_decision(&answer(Some("allow"), Some(f64::NAN)), 0.9),
-            Err(AppError::FileCheckFailed)
-        ));
-        assert!(matches!(
+        assert_eq!(verdict(Some("allow"), Some(0.9)), Verdict::Allow);
+        assert_eq!(verdict(Some("allow"), Some(0.89)), Verdict::Refuse);
+        assert_eq!(verdict(Some("refuse"), Some(0.99)), Verdict::Refuse);
+        assert_eq!(verdict(Some("allow"), None), Verdict::Unusable);
+        assert_eq!(verdict(Some("maybe"), Some(1.0)), Verdict::Unusable);
+        assert_eq!(verdict(Some("allow"), Some(1.1)), Verdict::Unusable);
+        assert_eq!(verdict(Some("allow"), Some(f64::NAN)), Verdict::Unusable);
+        assert_eq!(
             interpret_decision(
                 &DecisionBody {
                     answers: BTreeMap::new()
                 },
-                0.9
+                "publish",
+                0.9,
+                "file screen"
             ),
-            Err(AppError::FileCheckFailed)
-        ));
+            Verdict::Unusable
+        );
     }
 
     #[test]
@@ -722,6 +810,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, AppError::FileCheckFailed));
+        assert!(moderator.allows_post("hello").await);
     }
 
     #[tokio::test]
@@ -761,11 +850,11 @@ mod tests {
         );
         assert_eq!(
             body["questions"]["publish"]["criteria"]["allow"],
-            ALLOW_CRITERION
+            PUBLISH_ALLOW
         );
         assert_eq!(
             body["questions"]["publish"]["criteria"]["refuse"],
-            REFUSE_CRITERION
+            PUBLISH_REFUSE
         );
     }
 
@@ -932,5 +1021,76 @@ mod tests {
             .decode(prepared.files[0].trim_start_matches("data:image/png;base64,"))
             .unwrap();
         assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+    }
+
+    #[tokio::test]
+    async fn sends_post_text_and_posts_on_allow() {
+        let seen = Arc::new(Mutex::new(None));
+        let app = Router::new()
+            .route("/v1/systemone", post(record_and_allow))
+            .with_state(seen.clone());
+        let address = serve(app).await;
+        let moderator = live(
+            &format!("http://{address}/v1/systemone"),
+            0.9,
+            8,
+            Duration::from_secs(2),
+        );
+        assert!(moderator.allows_post("hello").await);
+        let body = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(body["state"], "hello");
+        assert!(body.get("files").is_none());
+        assert_eq!(body["questions"]["post"]["instructions"], POST_INSTRUCTIONS);
+        assert_eq!(body["questions"]["post"]["criteria"]["allow"], POST_ALLOW);
+        assert_eq!(body["questions"]["post"]["criteria"]["refuse"], POST_REFUSE);
+    }
+
+    #[tokio::test]
+    async fn skips_a_blank_post_without_asking() {
+        let app = Router::new().route(
+            "/v1/systemone",
+            post(|| async { (StatusCode::INTERNAL_SERVER_ERROR, "nope") }),
+        );
+        let address = serve(app).await;
+        let moderator = live(
+            &format!("http://{address}/v1/systemone"),
+            0.9,
+            8,
+            Duration::from_secs(2),
+        );
+        assert!(moderator.allows_post("  ").await);
+    }
+
+    #[tokio::test]
+    async fn skips_the_post_when_the_model_refuses_or_cannot_answer() {
+        let refuse = Router::new().route(
+            "/v1/systemone",
+            post(|| async {
+                Json(json!({
+                    "answers": { "post": { "choice": "refuse", "confidence": 0.99 } }
+                }))
+            }),
+        );
+        let address = serve(refuse).await;
+        let moderator = live(
+            &format!("http://{address}/v1/systemone"),
+            0.9,
+            8,
+            Duration::from_secs(2),
+        );
+        assert!(!moderator.allows_post("hello").await);
+
+        let broken = Router::new().route(
+            "/v1/systemone",
+            post(|| async { StatusCode::NOT_IMPLEMENTED }),
+        );
+        let address = serve(broken).await;
+        let moderator = live(
+            &format!("http://{address}/v1/systemone"),
+            0.9,
+            8,
+            Duration::from_secs(2),
+        );
+        assert!(!moderator.allows_post("hello").await);
     }
 }

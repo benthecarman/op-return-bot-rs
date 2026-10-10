@@ -18,10 +18,15 @@ The Rust service keeps these production interfaces.
   is stored only when the decision is allow and the confidence is at
   least the configured floor. A refusal shows "This file cannot be
   published." A check that does not answer shows "This file could not
-  be checked. Try again." Nothing is stored in either case.
-  `moderation.allow_unscreened` stores files without this check. Typed
-  messages are not checked. Create routes still accept URL-encoded and
-  JSON bodies, and those routes also accept the same `file` field.
+  be checked. Try again." Nothing is stored in either case. A public
+  typed message is still stored. It is posted to Twitter and Nostr only
+  when a separate decision allows that post. A refusal, a low
+  confidence, or a check that does not answer skips those posts. The
+  transaction is still published. `moderation.allow_unscreened` skips
+  both checks. Until `url` and `api_key_file` are both set, file uploads
+  are refused and posts go out as before. Create routes still accept
+  URL-encoded and JSON bodies, and those routes also accept the same
+  `file` field.
 - Nostr and LNURL: `/.well-known/nostr.json`,
   `/.well-known/lnurlp/{user}`, and `/lnurlp/{metadata}`
 - Utilities: `/qr` for invoices this service created, and

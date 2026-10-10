@@ -255,7 +255,7 @@ pub struct ExternalConfig {
 }
 
 /// File uploads are refused until `url` and `api_key_file` are both set.
-/// `allow_unscreened` stores files without asking the decision service.
+/// Social posts go out until then. `allow_unscreened` skips both checks.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModerationConfig {
@@ -458,7 +458,7 @@ config_file = "/tmp/ldk-server.toml"
     }
 
     #[test]
-    fn allows_files_without_a_check_only_when_asked() {
+    fn skips_both_checks_only_when_asked() {
         let text = format!(
             "{}\n\n[moderation]\nallow_unscreened = true\n",
             valid_config()

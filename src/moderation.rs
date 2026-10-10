@@ -5,11 +5,12 @@
 //! floor. Plain text is always stored. Twitter and Nostr hear about it only when a separate decision
 //! allows the post.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use image::ImageEncoder;
 use serde::Deserialize;
+use tokio::{sync::Semaphore, time::Instant};
 use url::Url;
 
 use crate::{AppError, AppResult, config::ModerationConfig};
@@ -33,6 +34,9 @@ const TARGET_LONG_SIDE: f32 = 1024.0;
 /// Stay under the renderer's `u16` pixel limit.
 const MAX_PIXEL: f32 = 2048.0;
 const MAX_PDF_DEPTH: usize = 32;
+/// Files prepared at once. A render that will not end holds its slot, so
+/// this bounds the threads and memory such files can take.
+const MAX_RENDERS: usize = 4;
 /// Lowercase markers of SVG markup and `data:` image URLs. The namespace
 /// catches an SVG root that uses another prefix.
 const DRAWN_TEXT_MARKERS: [&[u8]; 3] = [b"<svg", b"www.w3.org/2000/svg", b"data:image/"];
@@ -52,26 +56,19 @@ enum Mode {
     Live(Box<LiveModerator>),
 }
 
+#[derive(Clone)]
 struct LiveModerator {
     client: reqwest::Client,
     url: Url,
     api_key: String,
     floor: f64,
     max_pdf_pages: usize,
+    /// Covers the whole check of one file: the wait for a render slot, the
+    /// render, and the request.
     timeout: Duration,
-}
-
-impl Clone for LiveModerator {
-    fn clone(&self) -> Self {
-        Self {
-            client: self.client.clone(),
-            url: self.url.clone(),
-            api_key: self.api_key.clone(),
-            floor: self.floor,
-            max_pdf_pages: self.max_pdf_pages,
-            timeout: self.timeout,
-        }
-    }
+    /// Render slots. A slot stays taken until its render ends, even after
+    /// the wait for it has given up.
+    renders: Arc<Semaphore>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,6 +130,7 @@ impl Moderator {
                 floor: config.confidence_floor,
                 max_pdf_pages: config.max_pdf_pages,
                 timeout,
+                renders: Arc::new(Semaphore::new(MAX_RENDERS)),
             })),
         })
     }
@@ -177,13 +175,25 @@ impl Moderator {
 
 impl LiveModerator {
     async fn screen(&self, bytes: &[u8], kind: FileKind) -> AppResult<()> {
+        let deadline = Instant::now() + self.timeout;
+        // Every slot taken is a passing state, so the visitor may try again.
+        let slot = tokio::time::timeout_at(deadline, self.renders.clone().acquire_owned())
+            .await
+            .map_err(|_| {
+                tracing::warn!("file screen is busy");
+                AppError::FileCheckFailed
+            })?
+            .map_err(|_| AppError::FileCheckFailed)?;
         let owned = bytes.to_vec();
         let max_pages = self.max_pdf_pages;
-        // The render keeps running after this wait ends. The upload limit
-        // bounds how often that happens, and the page cap bounds each render.
-        let submission = tokio::time::timeout(
-            self.timeout,
-            tokio::task::spawn_blocking(move || prepare(&owned, kind, max_pages)),
+        // The render keeps running after this wait ends, and keeps its slot.
+        // A file that takes this long is refused, because it would again.
+        let submission = tokio::time::timeout_at(
+            deadline,
+            tokio::task::spawn_blocking(move || {
+                let _slot = slot;
+                prepare(&owned, kind, max_pages)
+            }),
         )
         .await
         .map_err(|_| {
@@ -203,6 +213,7 @@ impl LiveModerator {
             .client
             .post(self.url.clone())
             .bearer_auth(&self.api_key)
+            .timeout(deadline.saturating_duration_since(Instant::now()))
             .json(&request_body(
                 &submission.state,
                 &submission.files,
@@ -657,6 +668,16 @@ mod tests {
     }
 
     fn live(url: &str, floor: f64, pages: usize, timeout: Duration) -> Moderator {
+        live_with_slots(url, floor, pages, timeout, MAX_RENDERS)
+    }
+
+    fn live_with_slots(
+        url: &str,
+        floor: f64,
+        pages: usize,
+        timeout: Duration,
+        slots: usize,
+    ) -> Moderator {
         // These tests speak HTTP to a local server. reqwest 0.13 still loads
         // the platform CA store while building a client, and the Nix sandbox
         // has none, so the package check fails unless that load is skipped.
@@ -674,6 +695,7 @@ mod tests {
                 floor,
                 max_pdf_pages: pages,
                 timeout,
+                renders: Arc::new(Semaphore::new(slots)),
             })),
         }
     }
@@ -1025,6 +1047,19 @@ mod tests {
             0.9,
             8,
             Duration::from_millis(200),
+        );
+        let error = moderator.screen(IMAGE).await.unwrap_err();
+        assert!(matches!(error, AppError::FileCheckFailed));
+    }
+
+    #[tokio::test]
+    async fn asks_for_a_retry_when_every_render_slot_is_taken() {
+        let moderator = live_with_slots(
+            "http://127.0.0.1:9/v1/systemone",
+            0.9,
+            8,
+            Duration::from_millis(100),
+            0,
         );
         let error = moderator.screen(IMAGE).await.unwrap_err();
         assert!(matches!(error, AppError::FileCheckFailed));

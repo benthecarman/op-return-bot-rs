@@ -17,9 +17,12 @@ The Rust service keeps these production interfaces.
   markup or a `data:image/` URL is refused. A browser draws that text as
   an image, and the decision service would only read the markup.
   Anything else is checked before it is stored. JPEG, PNG, GIF, and WEBP
-  go to the decision service as images. A payload with `%PDF-` in its
-  first kilobyte is a PDF. A PDF is rendered to one image per page, and
-  the text layer goes with those images. A PDF with an embedded file is
+  go to the decision service as images. An image must hold one picture
+  and nothing else: no data after its end, no extra frames, no
+  thumbnail, and no metadata past a small colour profile. Remove
+  metadata before uploading. A payload with `%PDF-` in its first
+  kilobyte is a PDF. A PDF is rendered to one image per page, and the
+  text layer goes with those images. A PDF with an embedded file is
   refused, and so is any other file type. The file is stored only when
   the decision is allow and the confidence is at least the configured
   floor. A refusal shows "This file cannot be published." A check that

@@ -14,6 +14,8 @@ use url::Url;
 
 use crate::{AppError, AppResult, config::ModerationConfig};
 
+mod raster;
+
 const PUBLISH_INSTRUCTIONS: &str = "Can this be published on a public permanent ledger?";
 const PUBLISH_ALLOW: &str = "Content that is legal to publish.";
 const PUBLISH_REFUSE: &str = "Sexual content involving anyone under 18, or other content that is illegal to publish or possess.";
@@ -365,11 +367,17 @@ fn prepare(bytes: &[u8], kind: FileKind, max_pages: usize) -> AppResult<Submissi
             tracing::info!("file screen refused an unsupported file");
             Err(AppError::Unpublishable)
         }
-        FileKind::Image(mime) => Ok(Submission {
-            state: IMAGE_NOTE.to_owned(),
-            files: vec![data_url(mime, bytes)],
-            kind: "image",
-        }),
+        FileKind::Image(mime) => {
+            if let Err(reason) = raster::check(mime, bytes) {
+                tracing::info!(reason, "file screen refused an image");
+                return Err(AppError::Unpublishable);
+            }
+            Ok(Submission {
+                state: IMAGE_NOTE.to_owned(),
+                files: vec![data_url(mime, bytes)],
+                kind: "image",
+            })
+        }
         FileKind::Pdf => prepare_pdf(bytes, max_pages),
     }
 }
@@ -625,7 +633,7 @@ mod tests {
     use super::*;
 
     /// A payload the check treats as an image.
-    const IMAGE: &[u8] = b"GIF89ahello";
+    const IMAGE: &[u8] = raster::tests::GIF;
 
     fn prepare_file(bytes: &[u8], max_pages: usize) -> AppResult<Submission> {
         prepare(bytes, classify(bytes), max_pages)

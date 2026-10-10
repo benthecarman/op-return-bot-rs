@@ -21,21 +21,24 @@ The Rust service keeps these production interfaces.
   and nothing else: no data after its end, no extra frames, no
   thumbnail, and no metadata past a small colour profile. Remove
   metadata before uploading. A payload with `%PDF-` in its first
-  kilobyte is a PDF. A PDF is rendered to one image per page, and the
-  text layer goes with those images. A PDF with an embedded file is
-  refused, and so is any other file type. The file is stored only when
-  the decision is allow and the confidence is at least the configured
-  floor. A refusal shows "This file cannot be published." A check that
-  does not answer shows "This file could not be checked. Try again."
-  Nothing is stored in either case. A public typed message is still
-  stored. It is posted to Twitter and Nostr only when a separate
-  decision allows that post. A refusal, a low confidence, or a check
-  that does not answer skips those posts. The transaction is still
-  published. `moderation.allow_unscreened` skips both checks. Until
-  `url` and `api_key_file` are both set, payloads that are not text are
-  refused and posts go out as before. Create routes still accept
-  URL-encoded and JSON bodies, and those routes also accept the same
-  `file` field.
+  kilobyte is a PDF, and it must start with that header. A PDF is
+  rendered to one image per page, and the text layer goes with those
+  images. A PDF must show everything it stores. A PDF with data after
+  its end, bytes outside its objects, an object nothing refers to, an
+  image no page draws, a page thumbnail, optional layers, encryption, an
+  image file inside another object, or an embedded file is refused, and
+  so is any other file type. The file is stored only when the decision
+  is allow and the confidence is at least the configured floor. A
+  refusal shows "This file cannot be published." A check that does not
+  answer shows "This file could not be checked. Try again." Nothing is
+  stored in either case. A public typed message is still stored. It is
+  posted to Twitter and Nostr only when a separate decision allows that
+  post. A refusal, a low confidence, or a check that does not answer
+  skips those posts. The transaction is still published.
+  `moderation.allow_unscreened` skips both checks. Until `url` and
+  `api_key_file` are both set, payloads that are not text are refused
+  and posts go out as before. Create routes still accept URL-encoded and
+  JSON bodies, and those routes also accept the same `file` field.
 - Nostr and LNURL: `/.well-known/nostr.json`,
   `/.well-known/lnurlp/{user}`, and `/lnurlp/{metadata}`
 - Utilities: `/qr` for invoices this service created, and

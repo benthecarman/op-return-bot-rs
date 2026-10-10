@@ -14,6 +14,7 @@ use url::Url;
 
 use crate::{AppError, AppResult, config::ModerationConfig};
 
+mod pdf;
 mod raster;
 
 const PUBLISH_INSTRUCTIONS: &str = "Can this be published on a public permanent ledger?";
@@ -426,8 +427,16 @@ fn is_pdf(bytes: &[u8]) -> bool {
 }
 
 fn prepare_pdf(bytes: &[u8], max_pages: usize) -> AppResult<Submission> {
-    if embedded_file(bytes)? {
+    let document = lopdf::Document::load_mem(bytes).map_err(|_| {
+        tracing::info!("file screen refused a pdf it could not read");
+        AppError::Unpublishable
+    })?;
+    if embedded_file(&document) {
         tracing::info!("file screen refused a pdf with an embedded file");
+        return Err(AppError::Unpublishable);
+    }
+    if let Err(reason) = pdf::check(bytes, &document) {
+        tracing::info!(reason, "file screen refused a pdf");
         return Err(AppError::Unpublishable);
     }
     let state = pdf_state(bytes)?;
@@ -443,15 +452,11 @@ fn prepare_pdf(bytes: &[u8], max_pages: usize) -> AppResult<Submission> {
     })
 }
 
-fn embedded_file(bytes: &[u8]) -> AppResult<bool> {
-    let document = lopdf::Document::load_mem(bytes).map_err(|_| {
-        tracing::info!("file screen refused a pdf it could not read");
-        AppError::Unpublishable
-    })?;
-    Ok(document
+fn embedded_file(document: &lopdf::Document) -> bool {
+    document
         .objects
         .values()
-        .any(|object| object_has_embedded(object, 0)))
+        .any(|object| object_has_embedded(object, 0))
 }
 
 fn object_has_embedded(object: &lopdf::Object, depth: usize) -> bool {
@@ -712,7 +717,7 @@ mod tests {
         Json(json!({ "answers": answers }))
     }
 
-    fn pdf_with_pages(texts: &[&str]) -> Vec<u8> {
+    pub(super) fn pdf_with_pages(texts: &[&str]) -> Vec<u8> {
         let mut doc = Document::with_version("1.5");
         let parent_id = doc.new_object_id();
         let font_id = doc.add_object(dictionary! {

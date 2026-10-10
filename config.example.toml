@@ -69,7 +69,7 @@ slipstream_url = "https://slipstream.mara.com/api/transactions"
 # Set allow_unscreened = true to skip both checks.
 [moderation]
 allow_unscreened = false
-url = "https://maple.tail56f8c.ts.net/v1/systemone"
+url = "https://moderation.example.ts.net/v1/systemone"
 api_key_file = "/run/credentials/op-return-bot.service/maple-api-key"
 confidence_floor = 0.9
 timeout_seconds = 15

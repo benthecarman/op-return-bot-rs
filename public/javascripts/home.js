@@ -10,6 +10,17 @@
     count();
   }
 
+  var file = document.getElementById("file");
+  var fileLength = document.getElementById("file-length");
+  if (file && fileLength) {
+    var showFile = function () {
+      var chosen = file.files && file.files[0];
+      fileLength.textContent = (chosen ? chosen.size : 0) + " bytes";
+    };
+    file.addEventListener("change", showFile);
+    showFile();
+  }
+
   var strip = document.getElementById("recent");
   if (!strip) return;
   var section = strip.parentElement;

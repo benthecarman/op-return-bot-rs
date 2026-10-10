@@ -4,7 +4,7 @@ use askama::Template;
 use axum::{
     Form, Json, Router,
     body::{Body, to_bytes},
-    extract::{ConnectInfo, Path, Query, State},
+    extract::{ConnectInfo, FromRequest, Multipart, Path, Query, State},
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -221,6 +221,8 @@ struct IndexTemplate<'a> {
     recent_page: u32,
     error: &'a str,
     message: &'a str,
+    /// The upload tab stays selected when a file was rejected.
+    file_mode: bool,
 }
 
 #[derive(Template)]
@@ -228,6 +230,8 @@ struct IndexTemplate<'a> {
 struct InvoiceTemplate<'a> {
     onion_url: &'a str,
     message: &'a str,
+    /// The payload is not UTF-8, so `message` describes the bytes.
+    binary: bool,
     message_hash: String,
     invoice: &'a str,
     payment_hash: &'a str,
@@ -384,7 +388,7 @@ async fn index(State(state): State<AppState>, headers: HeaderMap) -> AppResult<R
         )
             .into_response()
     } else {
-        render_index(&state, "", "").await?.into_response()
+        render_index(&state, "", "", false).await?.into_response()
     };
     response.headers_mut().insert(
         "onion-location",
@@ -405,7 +409,12 @@ async fn index(State(state): State<AppState>, headers: HeaderMap) -> AppResult<R
     Ok(response)
 }
 
-async fn render_index(state: &AppState, error: &str, message: &str) -> AppResult<Html<String>> {
+async fn render_index(
+    state: &AppState,
+    error: &str,
+    message: &str,
+    file_mode: bool,
+) -> AppResult<Html<String>> {
     let recent = recent_tiles(state, None, RECENT_PAGE).await?;
     render(IndexTemplate {
         onion_url: state.config.server.onion_url.as_str(),
@@ -413,6 +422,7 @@ async fn render_index(state: &AppState, error: &str, message: &str) -> AppResult
         recent_page: RECENT_PAGE,
         error,
         message,
+        file_mode,
     })
 }
 
@@ -420,12 +430,24 @@ async fn create_request(
     State(state): State<AppState>,
     headers: HeaderMap,
     ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
-    Form(form): Form<CreateForm>,
+    request: Request<Body>,
 ) -> Response {
     if let Err(error) = check_create_limit(&state, &headers, Some(peer)) {
         return error.into_response();
     }
-    let input = form.into_request();
+    let incoming = match parse_create_request(request).await {
+        Ok(incoming) => incoming,
+        Err(error) => {
+            return match render_index(&state, &error.to_string(), "", false).await {
+                Ok(html) => (StatusCode::BAD_REQUEST, html).into_response(),
+                Err(render_error) => render_error.into_response(),
+            };
+        }
+    };
+    let from_file = incoming.from_file;
+    let input = incoming.into_request();
+    // A binary file cannot go back into the text box.
+    let echo = std::str::from_utf8(&input.message).unwrap_or("");
     match state.payments.create_unified(&input).await {
         Ok(created) => Redirect::to(&format!(
             "/invoice?invoice={}",
@@ -436,7 +458,7 @@ async fn create_request(
                 .map_or("", |row| &row.payment_hash)
         ))
         .into_response(),
-        Err(error) => match render_index(&state, &error.to_string(), &input.message_text()).await {
+        Err(error) => match render_index(&state, &error.to_string(), echo, from_file).await {
             Ok(html) => (StatusCode::BAD_REQUEST, html).into_response(),
             Err(render_error) => render_error.into_response(),
         },
@@ -696,11 +718,15 @@ async fn invoice(
             })
         })
         .transpose()?;
-    let message = record.request.message_text();
+    // Hash the stored bytes. A file that is not text is described on the
+    // page, and that description is not the payload.
+    let message_hash = hex::encode(Sha256::digest(&record.request.message));
+    let (message, binary) = message_for_page(&record.request.message);
     let page = InvoiceTemplate {
         onion_url: state.config.server.onion_url.as_str(),
         message: &message,
-        message_hash: hex::encode(Sha256::digest(message.as_bytes())),
+        binary,
+        message_hash,
         invoice: &invoice.bolt11,
         payment_hash: &invoice.payment_hash,
         lightning_uri: format!("lightning:{}", invoice.bolt11),
@@ -758,7 +784,11 @@ fn pending_page(
 }
 
 async fn bad_request_index(state: &AppState) -> AppResult<Response> {
-    Ok((StatusCode::BAD_REQUEST, render_index(state, "", "").await?).into_response())
+    Ok((
+        StatusCode::BAD_REQUEST,
+        render_index(state, "", "", false).await?,
+    )
+        .into_response())
 }
 
 async fn api_status(State(state): State<AppState>, Path(identifier): Path<String>) -> Response {
@@ -1206,36 +1236,109 @@ fn trim_ascii(bytes: &[u8]) -> &[u8] {
     &bytes[start..end]
 }
 
-async fn parse_create_request(request: Request<Body>) -> AppResult<CreateForm> {
-    let is_json = request
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.starts_with("application/json"));
-    let body = to_bytes(request.into_body(), 1_000_000)
-        .await
-        .map_err(|error| AppError::InvalidRequest(format!("could not read request: {error}")))?;
-    if is_json {
-        serde_json::from_slice(&body)
-            .map_err(|error| AppError::InvalidRequest(format!("invalid JSON request: {error}")))
-    } else {
-        serde_urlencoded::from_bytes(&body)
-            .map_err(|error| AppError::InvalidRequest(format!("invalid form request: {error}")))
-    }
+/// A create call before it becomes a payment request.
+struct IncomingCreate {
+    message: Vec<u8>,
+    no_twitter: bool,
+    /// The payload came from the file field.
+    from_file: bool,
 }
 
-impl CreateForm {
+impl IncomingCreate {
     fn into_request(self) -> CreateRequest {
         CreateRequest {
-            message: self.message.into_bytes(),
+            message: self.message,
             no_twitter: self.no_twitter,
         }
     }
 }
 
-impl CreateRequest {
-    fn message_text(&self) -> String {
-        String::from_utf8_lossy(&self.message).into_owned()
+async fn parse_create_request(request: Request<Body>) -> AppResult<IncomingCreate> {
+    let content_type = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    if content_type.starts_with("multipart/form-data") {
+        return parse_multipart_create(request).await;
+    }
+    let is_json = content_type.starts_with("application/json");
+    let body = to_bytes(request.into_body(), 1_000_000)
+        .await
+        .map_err(|error| AppError::InvalidRequest(format!("could not read request: {error}")))?;
+    let form: CreateForm = if is_json {
+        serde_json::from_slice(&body)
+            .map_err(|error| AppError::InvalidRequest(format!("invalid JSON request: {error}")))?
+    } else {
+        serde_urlencoded::from_bytes(&body)
+            .map_err(|error| AppError::InvalidRequest(format!("invalid form request: {error}")))?
+    };
+    Ok(form.into_incoming())
+}
+
+impl CreateForm {
+    fn into_incoming(self) -> IncomingCreate {
+        IncomingCreate {
+            message: self.message.into_bytes(),
+            no_twitter: self.no_twitter,
+            from_file: false,
+        }
+    }
+}
+
+/// Read a home-page upload. A non-empty `file` field is the payload. A text
+/// `message` field is used when no file bytes were attached.
+async fn parse_multipart_create(request: Request<Body>) -> AppResult<IncomingCreate> {
+    let mut multipart = Multipart::from_request(request, &())
+        .await
+        .map_err(|error| AppError::InvalidRequest(format!("invalid upload: {error}")))?;
+    let mut text: Option<Vec<u8>> = None;
+    let mut file: Option<Vec<u8>> = None;
+    let mut no_twitter = false;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|error| AppError::InvalidRequest(format!("invalid upload: {error}")))?
+    {
+        let name = field.name().unwrap_or("").to_owned();
+        let data = field
+            .bytes()
+            .await
+            .map_err(|error| AppError::InvalidRequest(format!("invalid upload: {error}")))?
+            .to_vec();
+        match name.as_str() {
+            "file" => file = Some(data),
+            "message" => text = Some(data),
+            "noTwitter" => no_twitter = data != b"false" && !data.is_empty(),
+            _ => {}
+        }
+    }
+    // An empty file input is not a payload. Typed text then still wins.
+    let file_has_bytes = file.as_ref().is_some_and(|bytes| !bytes.is_empty());
+    let (message, from_file) = if file_has_bytes {
+        (file.unwrap_or_default(), true)
+    } else if let Some(text) = text {
+        (text, false)
+    } else {
+        (Vec::new(), file.is_some())
+    };
+    // A file is never posted. The checkbox cannot turn that off.
+    if from_file {
+        no_twitter = true;
+    }
+    Ok(IncomingCreate {
+        message,
+        no_twitter,
+        from_file,
+    })
+}
+
+/// Text is shown as itself. Anything else is described by its size, because
+/// the invoice page also prints the SHA-256 of the raw bytes.
+fn message_for_page(message: &[u8]) -> (String, bool) {
+    match std::str::from_utf8(message) {
+        Ok(text) => (text.to_owned(), false),
+        Err(_) => (format!("{} bytes", message.len()), true),
     }
 }
 
@@ -1250,8 +1353,9 @@ mod tests {
             .body(Body::from(r#"{"message":"hello","noTwitter":true}"#))
             .unwrap();
         let parsed = parse_create_request(request).await.unwrap();
-        assert_eq!(parsed.message, "hello");
+        assert_eq!(parsed.message, b"hello");
         assert!(parsed.no_twitter);
+        assert!(!parsed.from_file);
     }
 
     #[tokio::test]
@@ -1261,8 +1365,122 @@ mod tests {
             .body(Body::from("message=hello+world&noTwitter=false"))
             .unwrap();
         let parsed = parse_create_request(request).await.unwrap();
-        assert_eq!(parsed.message, "hello world");
+        assert_eq!(parsed.message, b"hello world");
         assert!(!parsed.no_twitter);
+        assert!(!parsed.from_file);
+    }
+
+    #[tokio::test]
+    async fn accepts_an_uploaded_file() {
+        let body = b"\
+--bound\r\n\
+Content-Disposition: form-data; name=\"file\"; filename=\"note.bin\"\r\n\
+Content-Type: application/octet-stream\r\n\
+\r\n\
+\xff\x00hello\r\n\
+--bound\r\n\
+Content-Disposition: form-data; name=\"noTwitter\"\r\n\
+\r\n\
+false\r\n\
+--bound--\r\n";
+        let request = Request::builder()
+            .header(header::CONTENT_TYPE, "multipart/form-data; boundary=bound")
+            .body(Body::from(body.as_slice()))
+            .unwrap();
+        let parsed = parse_create_request(request).await.unwrap();
+        assert_eq!(parsed.message, b"\xff\x00hello");
+        assert!(parsed.no_twitter);
+        assert!(parsed.from_file);
+    }
+
+    #[tokio::test]
+    async fn keeps_typed_text_when_the_file_field_is_empty() {
+        let body = "\
+--bound\r\n\
+Content-Disposition: form-data; name=\"message\"\r\n\
+\r\n\
+hello\r\n\
+--bound\r\n\
+Content-Disposition: form-data; name=\"file\"; filename=\"\"\r\n\
+\r\n\
+\r\n\
+--bound--\r\n";
+        let request = Request::builder()
+            .header(header::CONTENT_TYPE, "multipart/form-data; boundary=bound")
+            .body(Body::from(body))
+            .unwrap();
+        let parsed = parse_create_request(request).await.unwrap();
+        assert_eq!(parsed.message, b"hello");
+        assert!(!parsed.no_twitter);
+        assert!(!parsed.from_file);
+    }
+
+    #[test]
+    fn home_page_offers_a_file_upload() {
+        let typed = IndexTemplate {
+            onion_url: "http://onion.example",
+            recent: &[],
+            recent_page: RECENT_PAGE,
+            error: "",
+            message: "kept",
+            file_mode: false,
+        }
+        .render()
+        .unwrap();
+        assert!(typed.contains("name=\"file\""));
+        assert!(typed.contains("multipart/form-data"));
+        assert!(typed.contains("A file is not posted to Twitter or Nostr"));
+        assert!(!typed.contains("id=\"noTwitterFile\""));
+        assert!(typed.contains("id=\"source-text\" checked"));
+        assert!(typed.contains("kept</textarea>"));
+        assert!(!typed.contains("id=\"source-file\" checked"));
+
+        let uploaded = IndexTemplate {
+            onion_url: "http://onion.example",
+            recent: &[],
+            recent_page: RECENT_PAGE,
+            error: "invalid request: message is too long",
+            message: "",
+            file_mode: true,
+        }
+        .render()
+        .unwrap();
+        assert!(uploaded.contains("id=\"source-file\" checked"));
+        assert!(uploaded.contains("message is too long"));
+    }
+
+    #[test]
+    fn invoice_page_describes_a_binary_payload() {
+        let page = InvoiceTemplate {
+            onion_url: "http://onion.example",
+            message: "2 bytes",
+            binary: true,
+            message_hash: "abc".to_owned(),
+            invoice: "lnbc1",
+            payment_hash: "ff",
+            lightning_uri: "lightning:lnbc1".to_owned(),
+            unified: None,
+        }
+        .render()
+        .unwrap();
+        assert!(page.contains(">File</dt>"));
+        assert!(page.contains("2 bytes"));
+        assert!(page.contains("The SHA256 is of these bytes."));
+        assert!(page.contains(">abc</dd>"));
+    }
+
+    #[test]
+    fn describes_a_binary_payload_by_its_size() {
+        let (text, binary) = message_for_page(b"hello");
+        assert_eq!(text, "hello");
+        assert!(!binary);
+        let (text, binary) = message_for_page(&[0xff, 0x00]);
+        assert_eq!(text, "2 bytes");
+        assert!(binary);
+        assert_ne!(
+            hex::encode(Sha256::digest(text.as_bytes())),
+            hex::encode(Sha256::digest([0xff, 0x00]))
+        );
     }
 
     #[test]

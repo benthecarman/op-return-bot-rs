@@ -2,17 +2,36 @@
 {% block page %}create{% endblock %}
 {% block content %}
 <section class="main wrap">
-  <form class="card" method="post" action="/createRequest">
+  <div class="card composer">
     <h1>Create an OP_RETURN</h1>
-    <p class="sub">Write any message into the Bitcoin blockchain. You only pay the fees.</p>
+    <p class="sub">Type a message or upload a file. It goes into the Bitcoin blockchain. You only pay the fees.</p>
     {% if !error.is_empty() %}<div class="error">{{ error }}</div>{% endif %}
-    <textarea minlength="1" placeholder="Chancellor on the brink..." name="message" id="message" aria-label="Message" required>{{ message }}</textarea>
-    <div class="meta"><span>Stored in an OP_RETURN output</span><span id="length"></span></div>
-    <div class="row">
-      <label class="check"><input type="checkbox" name="noTwitter" id="noTwitter" value="true"> Private <small>— not posted to Twitter or Nostr</small></label>
-      <button class="btn" type="submit">Create invoice</button>
+    <input class="source" type="radio" name="source" id="source-text" {% if !file_mode %}checked{% endif %}>
+    <input class="source" type="radio" name="source" id="source-file" {% if file_mode %}checked{% endif %}>
+    <div class="tabs">
+      <label for="source-text">Type</label>
+      <label for="source-file">File</label>
     </div>
-  </form>
+    <form class="pane text-form" method="post" action="/createRequest">
+      <textarea minlength="1" placeholder="Chancellor on the brink..." name="message" id="message" aria-label="Message" required>{{ message }}</textarea>
+      <div class="meta"><span>Stored in an OP_RETURN output</span><span id="length"></span></div>
+      <div class="row">
+        <label class="check"><input type="checkbox" name="noTwitter" id="noTwitter" value="true"> Private <small>— not posted to Twitter or Nostr</small></label>
+        <button class="btn" type="submit">Create invoice</button>
+      </div>
+    </form>
+    <form class="pane file-form" method="post" action="/createRequest" enctype="multipart/form-data">
+      <label class="pick">
+        <input type="file" name="file" id="file" aria-label="File" required>
+        <span class="hint">The file is written byte for byte, up to 99,000 bytes.</span>
+      </label>
+      <div class="meta"><span>Stored in an OP_RETURN output</span><span id="file-length">0 bytes</span></div>
+      <div class="row">
+        <span class="file-private">Private <small>A file is not posted to Twitter or Nostr</small></span>
+        <button class="btn" type="submit">Create invoice</button>
+      </div>
+    </form>
+  </div>
   <div class="side">
     <div class="card">
       <h2>What is an OP_RETURN?</h2>

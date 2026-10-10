@@ -7,7 +7,12 @@ The Rust service keeps these production interfaces.
 - Pages: `/`, `/nip5`, `/invoice`, `/success`, and `/connect`. HTML
   pages load only first-party CSS and JavaScript. The invoice page
   stays on the current origin after payment, including the onion site.
-- Form actions: `/createRequest` and `/createNip5Request`
+- Form actions: `/createRequest` and `/createNip5Request`. The home page
+  posts a typed message as URL-encoded form data, or a file as
+  `multipart/form-data` with a `file` field. The file's raw bytes are the
+  message. A file is stored as private, so it is not posted to Twitter
+  or Nostr. Create routes still accept URL-encoded and JSON bodies, and
+  those routes also accept the same `file` field.
 - Nostr and LNURL: `/.well-known/nostr.json`,
   `/.well-known/lnurlp/{user}`, and `/lnurlp/{metadata}`
 - Utilities: `/qr` for invoices this service created, and

@@ -27,7 +27,7 @@
       <h1>Pay to publish</h1>
       <p class="sub">Scan the code or copy the payment details. This page moves on when the payment arrives.</p>
       <dl>
-        <dt>Message</dt><dd class="message">{{ message }}</dd>
+        <dt>{% if binary %}File{% else %}Message{% endif %}</dt><dd class="message">{{ message }}{% if binary %}<span class="hint">The SHA256 is of these bytes.</span>{% endif %}</dd>
         <dt>SHA256</dt><dd class="mono">{{ message_hash }}</dd>
       </dl>
       {% match unified %}{% when Some with (pay) %}

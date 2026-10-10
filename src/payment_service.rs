@@ -992,14 +992,19 @@ impl PaymentService {
         completed_record.request.profit_sats = profit_sats;
         completed_record.request.btc_price_cents = btc_price_cents;
         completed_record.request.closed = true;
-        self.social
-            .publish_completion(
-                &completed_record,
-                &txid,
-                nip5_public_key.as_deref(),
-                report.as_ref(),
-            )
-            .await;
+        // Announcing waits on the content check and the social services, so
+        // it runs without holding the publishing lock.
+        let social = self.social.clone();
+        tokio::spawn(async move {
+            social
+                .publish_completion(
+                    &completed_record,
+                    &txid,
+                    nip5_public_key.as_deref(),
+                    report.as_ref(),
+                )
+                .await;
+        });
         Ok(())
     }
 

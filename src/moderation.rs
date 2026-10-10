@@ -614,9 +614,13 @@ mod tests {
     }
 
     fn live(url: &str, floor: f64, pages: usize, timeout: Duration) -> Moderator {
+        // These tests speak HTTP to a local server. reqwest 0.13 still loads
+        // the platform CA store while building a client, and the Nix sandbox
+        // has none, so the package check fails unless that load is skipped.
         let client = reqwest::Client::builder()
             .timeout(timeout)
             .no_proxy()
+            .tls_certs_only(std::iter::empty())
             .build()
             .unwrap();
         Moderator {

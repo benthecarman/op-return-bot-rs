@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use crate::{
-    AppConfig, Database, payment_service::PaymentService, rate_limit::RateLimiter,
-    repository::Repository, social::SocialPublisher,
+    AppConfig, Database, moderation::Moderator, payment_service::PaymentService,
+    rate_limit::RateLimiter, repository::Repository, social::SocialPublisher,
 };
 
 #[derive(Clone)]
@@ -12,6 +12,7 @@ pub struct AppState {
     pub repository: Repository,
     pub payments: PaymentService,
     pub social: SocialPublisher,
+    pub moderator: Moderator,
     pub creates: Arc<RateLimiter>,
 }
 
@@ -22,6 +23,7 @@ impl AppState {
         database: Database,
         payments: PaymentService,
         social: SocialPublisher,
+        moderator: Moderator,
     ) -> Self {
         let repository = Repository::new(database.clone());
         Self {
@@ -31,6 +33,7 @@ impl AppState {
             creates: payments.creates(),
             payments,
             social,
+            moderator,
         }
     }
 }

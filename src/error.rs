@@ -18,6 +18,12 @@ pub enum AppError {
     Migration(#[from] sqlx::migrate::MigrateError),
     #[error("invalid request: {0}")]
     InvalidRequest(String),
+    /// The file failed the content check, or it is a type the check cannot read.
+    #[error("This file cannot be published.")]
+    Unpublishable,
+    /// The content check did not return a usable decision.
+    #[error("This file could not be checked. Try again.")]
+    FileCheckFailed,
     #[error("too many requests")]
     RateLimited,
     #[error("not found: {0}")]
@@ -33,7 +39,8 @@ pub enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = match self {
-            Self::InvalidRequest(_) => StatusCode::BAD_REQUEST,
+            Self::InvalidRequest(_) | Self::Unpublishable => StatusCode::BAD_REQUEST,
+            Self::FileCheckFailed => StatusCode::SERVICE_UNAVAILABLE,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Config(_)
@@ -46,7 +53,11 @@ impl IntoResponse for AppError {
 
         let public = matches!(
             self,
-            Self::InvalidRequest(_) | Self::RateLimited | Self::NotFound(_)
+            Self::InvalidRequest(_)
+                | Self::Unpublishable
+                | Self::FileCheckFailed
+                | Self::RateLimited
+                | Self::NotFound(_)
         );
         if !public {
             tracing::error!(error = %self, "request failed");

@@ -445,6 +445,17 @@ async fn create_request(
         }
     };
     let from_file = incoming.from_file;
+    if let Err(error) = state
+        .moderator
+        .screen_if_file(
+            from_file,
+            &incoming.message,
+            state.config.payments.message_max_bytes,
+        )
+        .await
+    {
+        return screen_error_page(&state, error).await;
+    }
     let input = incoming.into_request();
     // A binary file cannot go back into the text box.
     let echo = std::str::from_utf8(&input.message).unwrap_or("");
@@ -647,6 +658,14 @@ async fn api_create(
 ) -> AppResult<String> {
     check_create_limit(&state, &headers, Some(peer))?;
     let form = parse_create_request(request).await?;
+    state
+        .moderator
+        .screen_if_file(
+            form.from_file,
+            &form.message,
+            state.config.payments.message_max_bytes,
+        )
+        .await?;
     let created = state.payments.create_invoice(&form.into_request()).await?;
     Ok(created
         .record
@@ -663,6 +682,14 @@ async fn api_unified(
 ) -> AppResult<Json<UnifiedResponse>> {
     check_create_limit(&state, &headers, Some(peer))?;
     let form = parse_create_request(request).await?;
+    state
+        .moderator
+        .screen_if_file(
+            form.from_file,
+            &form.message,
+            state.config.payments.message_max_bytes,
+        )
+        .await?;
     let created = state.payments.create_unified(&form.into_request()).await?;
     Ok(Json(unified_response(&created)?))
 }
@@ -1199,6 +1226,19 @@ fn cors_layer(state: &AppState) -> CorsLayer {
         .allow_headers([header::CONTENT_TYPE, header::ACCEPT])
 }
 
+/// A refused file stays on the file tab, and its bytes are not written back
+/// into the form.
+async fn screen_error_page(state: &AppState, error: AppError) -> Response {
+    let status = match error {
+        AppError::FileCheckFailed => StatusCode::SERVICE_UNAVAILABLE,
+        _ => StatusCode::BAD_REQUEST,
+    };
+    match render_index(state, &error.to_string(), "", true).await {
+        Ok(html) => (status, html).into_response(),
+        Err(render_error) => render_error.into_response(),
+    }
+}
+
 fn check_create_limit(
     state: &AppState,
     headers: &HeaderMap,
@@ -1447,6 +1487,20 @@ Content-Disposition: form-data; name=\"file\"; filename=\"\"\r\n\
         .unwrap();
         assert!(uploaded.contains("id=\"source-file\" checked"));
         assert!(uploaded.contains("message is too long"));
+
+        let refused = IndexTemplate {
+            onion_url: "http://onion.example",
+            recent: &[],
+            recent_page: RECENT_PAGE,
+            error: "This file cannot be published.",
+            message: "",
+            file_mode: true,
+        }
+        .render()
+        .unwrap();
+        assert!(refused.contains("This file cannot be published."));
+        assert!(refused.contains("id=\"source-file\" checked"));
+        assert!(refused.contains("></textarea>"));
     }
 
     #[test]

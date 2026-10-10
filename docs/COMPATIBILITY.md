@@ -11,8 +11,17 @@ The Rust service keeps these production interfaces.
   posts a typed message as URL-encoded form data, or a file as
   `multipart/form-data` with a `file` field. The file's raw bytes are the
   message. A file is stored as private, so it is not posted to Twitter
-  or Nostr. Create routes still accept URL-encoded and JSON bodies, and
-  those routes also accept the same `file` field.
+  or Nostr. A file is checked before it is stored. JPEG, PNG, GIF, and
+  WEBP go to the decision service as images. A PDF is rendered to one
+  image per page, and the text layer goes with those images. A PDF with
+  an embedded file is refused, and so is any other file type. The file
+  is stored only when the decision is allow and the confidence is at
+  least the configured floor. A refusal shows "This file cannot be
+  published." A check that does not answer shows "This file could not
+  be checked. Try again." Nothing is stored in either case.
+  `moderation.allow_unscreened` stores files without this check. Typed
+  messages are not checked. Create routes still accept URL-encoded and
+  JSON bodies, and those routes also accept the same `file` field.
 - Nostr and LNURL: `/.well-known/nostr.json`,
   `/.well-known/lnurlp/{user}`, and `/lnurlp/{metadata}`
 - Utilities: `/qr` for invoices this service created, and

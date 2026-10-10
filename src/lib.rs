@@ -6,6 +6,7 @@ pub mod domain;
 pub mod error;
 pub mod lightning;
 pub mod mcp;
+pub mod moderation;
 pub mod payment_service;
 pub mod pricing;
 pub mod rate_limit;

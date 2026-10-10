@@ -16,6 +16,7 @@ in {
         bitcoin-rpc-password = "/run/secrets/bitcoin-rpc-password";
         wallet-notify-key = "/run/secrets/wallet-notify-key";
         "ldk-server.macaroon" = "/run/secrets/ldk-server.macaroon";
+        maple-api-key = "/run/secrets/maple-api-key";
       };
       description = "Systemd credentials made available to the service.";
     };

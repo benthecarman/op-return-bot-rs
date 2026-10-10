@@ -26,6 +26,8 @@ pub struct AppConfig {
     pub payments: PaymentConfig,
     #[serde(default)]
     pub external: ExternalConfig,
+    #[serde(default)]
+    pub moderation: ModerationConfig,
 }
 
 impl AppConfig {
@@ -72,6 +74,7 @@ impl AppConfig {
                 "nostr.relays must not be empty when Nostr is enabled".to_owned(),
             ));
         }
+        self.moderation.validate()?;
         self.lightning.validate()
     }
 }
@@ -251,6 +254,64 @@ pub struct ExternalConfig {
     pub slipstream_url: Url,
 }
 
+/// File uploads are refused until `url` and `api_key_file` are both set.
+/// `allow_unscreened` stores files without asking the decision service.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ModerationConfig {
+    pub allow_unscreened: bool,
+    pub url: Option<Url>,
+    pub api_key_file: Option<PathBuf>,
+    pub confidence_floor: f64,
+    pub timeout_seconds: u64,
+    pub max_pdf_pages: usize,
+}
+
+impl ModerationConfig {
+    fn validate(&self) -> AppResult<()> {
+        if !(self.confidence_floor > 0.0 && self.confidence_floor <= 1.0) {
+            return Err(AppError::Config(
+                "moderation.confidence_floor must be greater than 0 and at most 1".to_owned(),
+            ));
+        }
+        if self.timeout_seconds == 0 {
+            return Err(AppError::Config(
+                "moderation.timeout_seconds must be greater than zero".to_owned(),
+            ));
+        }
+        if self.max_pdf_pages == 0 {
+            return Err(AppError::Config(
+                "moderation.max_pdf_pages must be greater than zero".to_owned(),
+            ));
+        }
+        if self.allow_unscreened {
+            return Ok(());
+        }
+        match (&self.url, &self.api_key_file) {
+            (None, None) | (Some(_), Some(_)) => Ok(()),
+            (Some(_), None) => Err(AppError::Config(
+                "moderation.api_key_file is required when moderation.url is set".to_owned(),
+            )),
+            (None, Some(_)) => Err(AppError::Config(
+                "moderation.url is required when moderation.api_key_file is set".to_owned(),
+            )),
+        }
+    }
+}
+
+impl Default for ModerationConfig {
+    fn default() -> Self {
+        Self {
+            allow_unscreened: false,
+            url: None,
+            api_key_file: None,
+            confidence_floor: 0.9,
+            timeout_seconds: 15,
+            max_pdf_pages: 8,
+        }
+    }
+}
+
 impl Default for ExternalConfig {
     fn default() -> Self {
         Self {
@@ -305,6 +366,13 @@ config_file = "/tmp/ldk-server.toml"
         assert_eq!(config.bitcoin.network, Network::Regtest);
         assert!(config.lightning.ldk_server.macaroon_file.is_none());
         assert_eq!(config.payments.message_max_bytes, 99_000);
+        assert!(!config.moderation.allow_unscreened);
+        assert!(config.moderation.url.is_none());
+        assert_eq!(
+            config.moderation.confidence_floor.to_bits(),
+            0.9_f64.to_bits()
+        );
+        assert_eq!(config.moderation.max_pdf_pages, 8);
     }
 
     #[test]
@@ -358,6 +426,46 @@ config_file = "/tmp/ldk-server.toml"
         let config: AppConfig = toml::from_str(&text).unwrap();
 
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_a_confidence_floor_outside_the_unit_interval() {
+        let text = format!("{}\n\n[moderation]\nconfidence_floor = 0\n", valid_config());
+        let error = toml::from_str::<AppConfig>(&text)
+            .unwrap()
+            .validate()
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "configuration error: moderation.confidence_floor must be greater than 0 and at most 1"
+        );
+    }
+
+    #[test]
+    fn requires_the_moderation_key_when_the_url_is_set() {
+        let text = format!(
+            "{}\n\n[moderation]\nurl = \"https://example.test/v1/systemone\"\n",
+            valid_config()
+        );
+        let error = toml::from_str::<AppConfig>(&text)
+            .unwrap()
+            .validate()
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "configuration error: moderation.api_key_file is required when moderation.url is set"
+        );
+    }
+
+    #[test]
+    fn allows_files_without_a_check_only_when_asked() {
+        let text = format!(
+            "{}\n\n[moderation]\nallow_unscreened = true\n",
+            valid_config()
+        );
+        let config: AppConfig = toml::from_str(&text).unwrap();
+        config.validate().unwrap();
+        assert!(config.moderation.allow_unscreened);
     }
 
     #[test]

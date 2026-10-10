@@ -12,15 +12,19 @@ anyhow = "1.0"
 askama = "0.16"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["form", "json", "macros", "multipart", "query"] }
+base64 = "0.22"
 bitcoin = { version = "0.32", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
 dirs = "6"
 futures-util = "0.3"
+hayro = "0.8.0"
 hex = "0.4"
 http = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 ldk-server-client = { git = "https://github.com/lightningdevkit/ldk-server.git", rev = "21a903ccb89496285c58a55ffdce42a9f0353a05", features = ["serde"] }
+lopdf = "0.42"
 nostr-sdk = "0.45.2"
+pdf-extract = "0.12.1"
 qrcode = "0.14"
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls", "stream"] }
 reqwest-oauth1 = { version = "0.3", default-features = false, features = ["json"] }

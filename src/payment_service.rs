@@ -23,6 +23,7 @@ use crate::{
     lightning::{
         CreatedInvoice, InvoiceEvent, InvoiceState, InvoiceStream, Lightning, OfferPayment,
     },
+    moderation::Moderator,
     pricing::{PriceQuote, STANDARD_OP_RETURN_BYTES, quote},
     rate_limit::RateLimiter,
     repository::{
@@ -62,6 +63,7 @@ pub struct PaymentService {
     mempool_limit: Arc<AtomicBool>,
     last_block_height: Arc<Mutex<Option<u64>>>,
     social: SocialPublisher,
+    moderator: Moderator,
     creates: Arc<RateLimiter>,
 }
 
@@ -109,6 +111,7 @@ impl PaymentService {
         bitcoin: BitcoinClient,
         lightning: Arc<dyn Lightning>,
         social: SocialPublisher,
+        moderator: Moderator,
         creates: Arc<RateLimiter>,
     ) -> AppResult<Self> {
         Ok(Self {
@@ -126,6 +129,7 @@ impl PaymentService {
             mempool_limit: Arc::new(AtomicBool::new(false)),
             last_block_height: Arc::new(Mutex::new(None)),
             social,
+            moderator,
             creates,
         })
     }
@@ -158,6 +162,7 @@ impl PaymentService {
         telegram_id: Option<i64>,
     ) -> AppResult<CreatedPayment> {
         let price = self.price(input).await?;
+        self.moderator.screen(&input.message).await?;
         let invoice = self
             .lightning
             .create_invoice_with_description_hash(
@@ -198,6 +203,7 @@ impl PaymentService {
         nip5: Option<&NewNip5<'_>>,
     ) -> AppResult<CreatedPayment> {
         let price = self.price(input).await?;
+        self.moderator.screen(&input.message).await?;
         let amount_msats = msats(price.amount_sats)?;
         let hash = message_hash(&input.message);
         let offer_description = format!("OP_RETURN Bot {}", hex::encode(hash));

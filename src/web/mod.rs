@@ -445,20 +445,13 @@ async fn create_request(
         }
     };
     let from_file = incoming.from_file;
-    if let Err(error) = state
-        .social
-        .screen_file(
-            from_file,
-            &incoming.message,
-            state.config.payments.message_max_bytes,
-        )
-        .await
-    {
-        return screen_error_page(&state, error).await;
-    }
     let input = incoming.into_request();
-    // A binary file cannot go back into the text box.
-    let echo = std::str::from_utf8(&input.message).unwrap_or("");
+    // A file does not go back into the text box.
+    let echo = if from_file {
+        ""
+    } else {
+        std::str::from_utf8(&input.message).unwrap_or("")
+    };
     match state.payments.create_unified(&input).await {
         Ok(created) => Redirect::to(&format!(
             "/invoice?invoice={}",
@@ -470,7 +463,7 @@ async fn create_request(
         ))
         .into_response(),
         Err(error) => match render_index(&state, &error.to_string(), echo, from_file).await {
-            Ok(html) => (StatusCode::BAD_REQUEST, html).into_response(),
+            Ok(html) => (error.status(), html).into_response(),
             Err(render_error) => render_error.into_response(),
         },
     }
@@ -658,14 +651,6 @@ async fn api_create(
 ) -> AppResult<String> {
     check_create_limit(&state, &headers, Some(peer))?;
     let form = parse_create_request(request).await?;
-    state
-        .social
-        .screen_file(
-            form.from_file,
-            &form.message,
-            state.config.payments.message_max_bytes,
-        )
-        .await?;
     let created = state.payments.create_invoice(&form.into_request()).await?;
     Ok(created
         .record
@@ -682,14 +667,6 @@ async fn api_unified(
 ) -> AppResult<Json<UnifiedResponse>> {
     check_create_limit(&state, &headers, Some(peer))?;
     let form = parse_create_request(request).await?;
-    state
-        .social
-        .screen_file(
-            form.from_file,
-            &form.message,
-            state.config.payments.message_max_bytes,
-        )
-        .await?;
     let created = state.payments.create_unified(&form.into_request()).await?;
     Ok(Json(unified_response(&created)?))
 }
@@ -1226,19 +1203,6 @@ fn cors_layer(state: &AppState) -> CorsLayer {
         .allow_headers([header::CONTENT_TYPE, header::ACCEPT])
 }
 
-/// A refused file stays on the file tab, and its bytes are not written back
-/// into the form.
-async fn screen_error_page(state: &AppState, error: AppError) -> Response {
-    let status = match error {
-        AppError::FileCheckFailed => StatusCode::SERVICE_UNAVAILABLE,
-        _ => StatusCode::BAD_REQUEST,
-    };
-    match render_index(state, &error.to_string(), "", true).await {
-        Ok(html) => (status, html).into_response(),
-        Err(render_error) => render_error.into_response(),
-    }
-}
-
 fn check_create_limit(
     state: &AppState,
     headers: &HeaderMap,
@@ -1358,6 +1322,12 @@ async fn parse_multipart_create(request: Request<Body>) -> AppResult<IncomingCre
     let (message, from_file) = if file_has_bytes {
         (file.unwrap_or_default(), true)
     } else if let Some(text) = text {
+        // Raw bytes belong in the file field, which keeps them off social.
+        if std::str::from_utf8(&text).is_err() {
+            return Err(AppError::InvalidRequest(
+                "message must be UTF-8 text; send other bytes as a file".to_owned(),
+            ));
+        }
         (text, false)
     } else {
         (Vec::new(), file.is_some())
@@ -1453,6 +1423,21 @@ Content-Disposition: form-data; name=\"file\"; filename=\"\"\r\n\
         assert_eq!(parsed.message, b"hello");
         assert!(!parsed.no_twitter);
         assert!(!parsed.from_file);
+    }
+
+    #[tokio::test]
+    async fn refuses_raw_bytes_in_the_message_field() {
+        let mut body = b"--bound\r\n\
+Content-Disposition: form-data; name=\"message\"\r\n\
+\r\n"
+            .to_vec();
+        body.extend_from_slice(b"\xff\xd8\xffhello\r\n--bound--\r\n");
+        let request = Request::builder()
+            .header(header::CONTENT_TYPE, "multipart/form-data; boundary=bound")
+            .body(Body::from(body))
+            .unwrap();
+        let error = parse_create_request(request).await.err().unwrap();
+        assert!(matches!(error, AppError::InvalidRequest(_)));
     }
 
     #[test]

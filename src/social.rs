@@ -89,26 +89,13 @@ struct TwitterCreateData {
 }
 
 impl SocialPublisher {
-    pub async fn connect(config: &AppConfig) -> AppResult<Self> {
+    pub async fn connect(config: &AppConfig, moderator: Moderator) -> AppResult<Self> {
         Ok(Self {
             nostr: NostrPublisher::connect(&config.nostr).await?,
             twitter: TwitterPublisher::connect(&config.twitter).await?,
             telegram: TelegramPublisher::connect(&config.telegram).await?,
-            moderator: Moderator::connect(&config.moderation).await?,
+            moderator,
         })
-    }
-
-    /// Refuses a file the decision service will not publish. Typed text is
-    /// left for the tweet check at broadcast time.
-    pub async fn screen_file(
-        &self,
-        from_file: bool,
-        bytes: &[u8],
-        max_bytes: usize,
-    ) -> AppResult<()> {
-        self.moderator
-            .screen_if_file(from_file, bytes, max_bytes)
-            .await
     }
 
     /// Announces a completed request. `nip5_public_key` is the buyer of a

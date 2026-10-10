@@ -36,9 +36,10 @@ pub enum AppError {
     Internal(String),
 }
 
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
-        let status = match self {
+impl AppError {
+    #[must_use]
+    pub const fn status(&self) -> StatusCode {
+        match self {
             Self::InvalidRequest(_) | Self::Unpublishable => StatusCode::BAD_REQUEST,
             Self::FileCheckFailed => StatusCode::SERVICE_UNAVAILABLE,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
@@ -49,7 +50,13 @@ impl IntoResponse for AppError {
             | Self::Bitcoin(_)
             | Self::Upstream(_)
             | Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        };
+        }
+    }
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let status = self.status();
 
         let public = matches!(
             self,

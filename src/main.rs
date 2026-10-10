@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use op_return_bot::{
-    AppConfig, AppState, Database, bitcoin_rpc::BitcoinClient, lightning,
+    AppConfig, AppState, Database, bitcoin_rpc::BitcoinClient, lightning, moderation::Moderator,
     payment_service::PaymentService, repository::Repository, social::SocialPublisher, web,
 };
 use sd_notify::NotifyState;
@@ -38,7 +38,8 @@ async fn main() -> anyhow::Result<()> {
     let bind_address = config.server.bind_address();
     let bitcoin = BitcoinClient::connect(&config.bitcoin).await?;
     let lightning = lightning::connect(&config.lightning).await?;
-    let social = SocialPublisher::connect(&config).await?;
+    let moderator = Moderator::connect(&config.moderation).await?;
+    let social = SocialPublisher::connect(&config, moderator.clone()).await?;
     let config = std::sync::Arc::new(config);
     let repository = Repository::new(database.clone());
     let creates = std::sync::Arc::new(op_return_bot::rate_limit::RateLimiter::new(
@@ -52,6 +53,7 @@ async fn main() -> anyhow::Result<()> {
         bitcoin,
         lightning,
         social.clone(),
+        moderator,
         creates.clone(),
     )?;
     tokio::spawn(payments.clone().run_reconciler());

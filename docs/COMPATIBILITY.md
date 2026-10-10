@@ -11,8 +11,11 @@ The Rust service keeps these production interfaces.
   posts a typed message as URL-encoded form data, or a file as
   `multipart/form-data` with a `file` field. The file's raw bytes are the
   message. A file is stored as private, so it is not posted to Twitter
-  or Nostr. A file is checked before it is stored. JPEG, PNG, GIF, and
-  WEBP go to the decision service as images. A PDF is rendered to one
+  or Nostr. A multipart `message` field must be UTF-8 text. Every create
+  path checks the payload by its content, not by the field it came in.
+  UTF-8 text is stored without a check. Anything else is checked before
+  it is stored. JPEG, PNG, GIF, and WEBP go to the decision service as
+  images. A payload with `%PDF-` in its first kilobyte is a PDF. A PDF is rendered to one
   image per page, and the text layer goes with those images. A PDF with
   an embedded file is refused, and so is any other file type. The file
   is stored only when the decision is allow and the confidence is at
@@ -23,8 +26,8 @@ The Rust service keeps these production interfaces.
   when a separate decision allows that post. A refusal, a low
   confidence, or a check that does not answer skips those posts. The
   transaction is still published. `moderation.allow_unscreened` skips
-  both checks. Until `url` and `api_key_file` are both set, file uploads
-  are refused and posts go out as before. Create routes still accept
+  both checks. Until `url` and `api_key_file` are both set, payloads that
+  are not text are refused and posts go out as before. Create routes still accept
   URL-encoded and JSON bodies, and those routes also accept the same
   `file` field.
 - Nostr and LNURL: `/.well-known/nostr.json`,

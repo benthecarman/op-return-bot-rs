@@ -1,8 +1,8 @@
 //! Screen a file before it is stored, and a public message before it is posted.
 //!
-//! A file is stored only when the decision service chooses `allow` with
-//! confidence at or above the configured floor. A typed message is always
-//! stored. Twitter and Nostr hear about it only when a separate decision
+//! A payload that is not plain text is stored only when the decision
+//! service chooses `allow` with confidence at or above the configured
+//! floor. Plain text is always stored. Twitter and Nostr hear about it only when a separate decision
 //! allows the post.
 
 use std::{collections::BTreeMap, time::Duration};
@@ -30,6 +30,8 @@ const TARGET_LONG_SIDE: f32 = 1024.0;
 /// Stay under the renderer's `u16` pixel limit.
 const MAX_PIXEL: f32 = 2048.0;
 const MAX_PDF_DEPTH: usize = 32;
+/// How far into a payload a PDF reader looks for the `%PDF-` header.
+const PDF_HEADER_WINDOW: usize = 1024;
 
 #[derive(Clone, Default)]
 pub struct Moderator {
@@ -129,17 +131,13 @@ impl Moderator {
         })
     }
 
-    /// Screen `bytes` when they came from a file field.
+    /// Screen a payload before it is stored.
     ///
-    /// An empty file and a file past `max_bytes` are left for the existing
-    /// message checks. Those checks reject the upload and store nothing.
-    pub async fn screen_if_file(
-        &self,
-        from_file: bool,
-        bytes: &[u8],
-        max_bytes: usize,
-    ) -> AppResult<()> {
-        if !from_file || bytes.is_empty() || bytes.len() > max_bytes {
+    /// Plain text is stored without a check. Anything else must pass the
+    /// decision service, whichever form field it came from.
+    pub async fn screen(&self, bytes: &[u8]) -> AppResult<()> {
+        let kind = classify(bytes);
+        if kind == FileKind::Text {
             return Ok(());
         }
         match &self.inner {
@@ -148,7 +146,7 @@ impl Moderator {
                 tracing::warn!("file upload refused because screening is not configured");
                 Err(AppError::FileCheckFailed)
             }
-            Mode::Live(live) => live.screen(bytes).await,
+            Mode::Live(live) => live.screen(bytes, kind).await,
         }
     }
 
@@ -171,14 +169,14 @@ impl Moderator {
 }
 
 impl LiveModerator {
-    async fn screen(&self, bytes: &[u8]) -> AppResult<()> {
+    async fn screen(&self, bytes: &[u8], kind: FileKind) -> AppResult<()> {
         let owned = bytes.to_vec();
         let max_pages = self.max_pdf_pages;
         // The render keeps running after this wait ends. The upload limit
         // bounds how often that happens, and the page cap bounds each render.
         let submission = tokio::time::timeout(
             self.timeout,
-            tokio::task::spawn_blocking(move || prepare(&owned, max_pages)),
+            tokio::task::spawn_blocking(move || prepare(&owned, kind, max_pages)),
         )
         .await
         .map_err(|_| {
@@ -356,17 +354,13 @@ fn interpret_decision(body: &DecisionBody, question: &str, floor: f64, check: &s
     Verdict::Unusable
 }
 
-fn prepare(bytes: &[u8], max_pages: usize) -> AppResult<Submission> {
-    match classify(bytes) {
-        FileKind::Unsupported => {
+fn prepare(bytes: &[u8], kind: FileKind, max_pages: usize) -> AppResult<Submission> {
+    match kind {
+        // Text never reaches this point. It is stored without a check.
+        FileKind::Text | FileKind::Unsupported => {
             tracing::info!("file screen refused an unsupported file");
             Err(AppError::Unpublishable)
         }
-        FileKind::Text => Ok(Submission {
-            state: String::from_utf8(bytes.to_vec()).map_err(|_| AppError::Unpublishable)?,
-            files: Vec::new(),
-            kind: "text",
-        }),
         FileKind::Image(mime) => Ok(Submission {
             state: IMAGE_NOTE.to_owned(),
             files: vec![data_url(mime, bytes)],
@@ -385,13 +379,21 @@ fn classify(bytes: &[u8]) -> FileKind {
         FileKind::Image("image/gif")
     } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
         FileKind::Image("image/webp")
-    } else if bytes.starts_with(b"%PDF") {
+    } else if is_pdf(bytes) {
         FileKind::Pdf
     } else if std::str::from_utf8(bytes).is_ok() {
         FileKind::Text
     } else {
         FileKind::Unsupported
     }
+}
+
+/// PDF readers look for the header anywhere in the first kilobyte, so a
+/// text prefix must not hide a PDF from the check.
+fn is_pdf(bytes: &[u8]) -> bool {
+    bytes[..bytes.len().min(PDF_HEADER_WINDOW)]
+        .windows(5)
+        .any(|window| window == b"%PDF-")
 }
 
 fn prepare_pdf(bytes: &[u8], max_pages: usize) -> AppResult<Submission> {
@@ -601,6 +603,13 @@ mod tests {
 
     use super::*;
 
+    /// A payload the check treats as an image.
+    const IMAGE: &[u8] = b"GIF89ahello";
+
+    fn prepare_file(bytes: &[u8], max_pages: usize) -> AppResult<Submission> {
+        prepare(bytes, classify(bytes), max_pages)
+    }
+
     fn answer(choice: Option<&str>, confidence: Option<f64>) -> DecisionBody {
         let mut answers = BTreeMap::new();
         answers.insert(
@@ -753,6 +762,7 @@ mod tests {
             FileKind::Image("image/webp")
         );
         assert_eq!(classify(b"%PDF-1.7\nhello"), FileKind::Pdf);
+        assert_eq!(classify(b"hello\n%PDF-1.7\n"), FileKind::Pdf);
         assert_eq!(classify(b"hello"), FileKind::Text);
         assert_eq!(classify(b"\xff\x00"), FileKind::Unsupported);
     }
@@ -798,10 +808,7 @@ mod tests {
     #[tokio::test]
     async fn skips_the_check_when_unscreened_files_are_allowed() {
         let moderator = Moderator { inner: Mode::Skip };
-        moderator
-            .screen_if_file(true, &[0xff, 0x00], 100)
-            .await
-            .unwrap();
+        moderator.screen(&[0xff, 0x00]).await.unwrap();
     }
 
     #[tokio::test]
@@ -809,29 +816,13 @@ mod tests {
         let moderator = Moderator {
             inner: Mode::Closed,
         };
-        let error = moderator
-            .screen_if_file(true, b"hello", 100)
-            .await
-            .unwrap_err();
+        let error = moderator.screen(IMAGE).await.unwrap_err();
         assert!(matches!(error, AppError::FileCheckFailed));
         assert!(moderator.allows_post("hello").await);
     }
 
     #[tokio::test]
-    async fn leaves_typed_empty_and_oversized_payloads_unchecked() {
-        let moderator = Moderator {
-            inner: Mode::Closed,
-        };
-        moderator
-            .screen_if_file(false, b"hello", 100)
-            .await
-            .unwrap();
-        moderator.screen_if_file(true, b"", 100).await.unwrap();
-        moderator.screen_if_file(true, b"abcd", 3).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn sends_text_and_accepts_an_allow() {
+    async fn stores_plain_text_without_asking() {
         let seen = Arc::new(Mutex::new(None));
         let app = Router::new()
             .route("/v1/systemone", post(record_and_allow))
@@ -843,10 +834,43 @@ mod tests {
             8,
             Duration::from_secs(2),
         );
-        moderator.screen_if_file(true, b"hello", 100).await.unwrap();
+        moderator.screen(b"hello").await.unwrap();
+        assert!(seen.lock().unwrap().is_none());
+        Moderator {
+            inner: Mode::Closed,
+        }
+        .screen(b"hello")
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn screens_binary_bytes_from_any_field() {
+        let moderator = Moderator {
+            inner: Mode::Closed,
+        };
+        let error = moderator.screen(b"\xff\x00hello").await.unwrap_err();
+        assert!(matches!(error, AppError::FileCheckFailed));
+    }
+
+    #[tokio::test]
+    async fn sends_a_gif_as_an_image() {
+        let seen = Arc::new(Mutex::new(None));
+        let app = Router::new()
+            .route("/v1/systemone", post(record_and_allow))
+            .with_state(seen.clone());
+        let address = serve(app).await;
+        let moderator = live(
+            &format!("http://{address}/v1/systemone"),
+            0.9,
+            8,
+            Duration::from_secs(2),
+        );
+        moderator.screen(IMAGE).await.unwrap();
         let body = seen.lock().unwrap().clone().unwrap();
-        assert_eq!(body["state"], "hello");
-        assert!(body.get("files").is_none());
+        let file = body["files"][0].as_str().unwrap();
+        assert!(file.starts_with("data:image/gif;base64,"));
+        assert_eq!(body["state"], IMAGE_NOTE);
         assert_eq!(body["questions"]["publish"]["type"], "choice");
         assert_eq!(
             body["questions"]["publish"]["instructions"],
@@ -863,29 +887,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sends_a_gif_as_an_image() {
-        let seen = Arc::new(Mutex::new(None));
-        let app = Router::new()
-            .route("/v1/systemone", post(record_and_allow))
-            .with_state(seen.clone());
-        let address = serve(app).await;
-        let moderator = live(
-            &format!("http://{address}/v1/systemone"),
-            0.9,
-            8,
-            Duration::from_secs(2),
-        );
-        moderator
-            .screen_if_file(true, b"GIF89ahello", 100)
-            .await
-            .unwrap();
-        let body = seen.lock().unwrap().clone().unwrap();
-        let file = body["files"][0].as_str().unwrap();
-        assert!(file.starts_with("data:image/gif;base64,"));
-        assert_eq!(body["state"], IMAGE_NOTE);
-    }
-
-    #[tokio::test]
     async fn refuses_an_unsupported_file_without_asking() {
         let seen = Arc::new(Mutex::new(None));
         let app = Router::new()
@@ -898,10 +899,7 @@ mod tests {
             8,
             Duration::from_secs(2),
         );
-        let error = moderator
-            .screen_if_file(true, b"\xff\x00hello", 100)
-            .await
-            .unwrap_err();
+        let error = moderator.screen(b"\xff\x00hello").await.unwrap_err();
         assert!(matches!(error, AppError::Unpublishable));
         assert!(seen.lock().unwrap().is_none());
     }
@@ -923,10 +921,7 @@ mod tests {
             8,
             Duration::from_secs(2),
         );
-        let error = moderator
-            .screen_if_file(true, b"hello", 100)
-            .await
-            .unwrap_err();
+        let error = moderator.screen(IMAGE).await.unwrap_err();
         assert!(matches!(error, AppError::Unpublishable));
 
         let address = serve(Router::new().route(
@@ -944,10 +939,7 @@ mod tests {
             8,
             Duration::from_secs(2),
         );
-        let error = moderator
-            .screen_if_file(true, b"hello", 100)
-            .await
-            .unwrap_err();
+        let error = moderator.screen(IMAGE).await.unwrap_err();
         assert!(matches!(error, AppError::Unpublishable));
     }
 
@@ -964,10 +956,7 @@ mod tests {
             8,
             Duration::from_secs(2),
         );
-        let error = moderator
-            .screen_if_file(true, b"hello", 100)
-            .await
-            .unwrap_err();
+        let error = moderator.screen(IMAGE).await.unwrap_err();
         assert!(matches!(error, AppError::FileCheckFailed));
 
         let address = serve(Router::new().route(
@@ -984,34 +973,31 @@ mod tests {
             8,
             Duration::from_millis(200),
         );
-        let error = moderator
-            .screen_if_file(true, b"hello", 100)
-            .await
-            .unwrap_err();
+        let error = moderator.screen(IMAGE).await.unwrap_err();
         assert!(matches!(error, AppError::FileCheckFailed));
     }
 
     #[test]
     fn refuses_a_pdf_with_an_embedded_file() {
-        let error = prepare(&embedded_pdf(), 8).unwrap_err();
+        let error = prepare_file(&embedded_pdf(), 8).unwrap_err();
         assert!(matches!(error, AppError::Unpublishable));
     }
 
     #[test]
     fn refuses_a_pdf_with_too_many_pages() {
-        let error = prepare(&pdf_with_pages(&["One", "Two"]), 1).unwrap_err();
+        let error = prepare_file(&pdf_with_pages(&["One", "Two"]), 1).unwrap_err();
         assert!(matches!(error, AppError::Unpublishable));
     }
 
     #[test]
     fn refuses_a_pdf_that_does_not_parse() {
-        let error = prepare(b"%PDF-1.7 not a pdf", 8).unwrap_err();
+        let error = prepare_file(b"%PDF-1.7 not a pdf", 8).unwrap_err();
         assert!(matches!(error, AppError::Unpublishable));
     }
 
     #[test]
     fn renders_each_pdf_page_and_keeps_the_text() {
-        let prepared = prepare(&pdf_with_pages(&["Alpha", "Beta"]), 8).unwrap();
+        let prepared = prepare_file(&pdf_with_pages(&["Alpha", "Beta"]), 8).unwrap();
         assert_eq!(prepared.files.len(), 2);
         assert!(
             prepared

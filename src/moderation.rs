@@ -157,18 +157,16 @@ impl Moderator {
 
     /// Whether Twitter and Nostr may announce `text`.
     ///
-    /// An unconfigured check posts. A configured check posts only on an
-    /// allow at or above the floor. A refusal, a low confidence, or a
-    /// check that does not answer skips the posts. The transaction is
-    /// unaffected.
-    #[must_use]
-    pub async fn allows_post(&self, text: &str) -> bool {
+    /// An unconfigured check allows the post. A configured check allows it
+    /// only on an allow at or above the floor. The transaction is
+    /// unaffected either way.
+    pub async fn check_post(&self, text: &str) -> Verdict {
         if text.trim().is_empty() {
-            return true;
+            return Verdict::Allow;
         }
         match &self.inner {
-            Mode::Skip | Mode::Closed => true,
-            Mode::Live(live) => live.allows_post(text).await,
+            Mode::Skip | Mode::Closed => Verdict::Allow,
+            Mode::Live(live) => live.check_post(text).await,
         }
     }
 }
@@ -241,7 +239,7 @@ impl LiveModerator {
         }
     }
 
-    async fn allows_post(&self, text: &str) -> bool {
+    async fn check_post(&self, text: &str) -> Verdict {
         let response = match self
             .client
             .post(self.url.clone())
@@ -253,13 +251,13 @@ impl LiveModerator {
             Ok(response) => response,
             Err(error) => {
                 tracing::warn!(error = %error, "social post check failed");
-                return false;
+                return Verdict::Unusable;
             }
         };
         let status = response.status();
         if !status.is_success() {
             tracing::warn!(%status, "social post check was rejected");
-            return false;
+            return Verdict::Unusable;
         }
         let body = match response.json().await {
             Ok(body) => body,
@@ -268,10 +266,10 @@ impl LiveModerator {
                     error = %error,
                     "social post check returned a decision that could not be read"
                 );
-                return false;
+                return Verdict::Unusable;
             }
         };
-        interpret_decision(&body, POST.name, self.floor, "social post check") == Verdict::Allow
+        interpret_decision(&body, POST.name, self.floor, "social post check")
     }
 }
 
@@ -296,10 +294,13 @@ const POST: Question = Question {
     refuse: POST_REFUSE,
 };
 
+/// The outcome of a content check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Verdict {
+pub enum Verdict {
     Allow,
+    /// A refusal, or an allow below the confidence floor.
     Refuse,
+    /// The check did not return a usable decision.
     Unusable,
 }
 
@@ -874,7 +875,7 @@ mod tests {
         };
         let error = moderator.screen(IMAGE).await.unwrap_err();
         assert!(matches!(error, AppError::FileCheckFailed));
-        assert!(moderator.allows_post("hello").await);
+        assert_eq!(moderator.check_post("hello").await, Verdict::Allow);
     }
 
     #[tokio::test]
@@ -1114,7 +1115,7 @@ mod tests {
             8,
             Duration::from_secs(2),
         );
-        assert!(moderator.allows_post("hello").await);
+        assert_eq!(moderator.check_post("hello").await, Verdict::Allow);
         let body = seen.lock().unwrap().clone().unwrap();
         assert_eq!(body["state"], "hello");
         assert!(body.get("files").is_none());
@@ -1136,7 +1137,7 @@ mod tests {
             8,
             Duration::from_secs(2),
         );
-        assert!(moderator.allows_post("  ").await);
+        assert_eq!(moderator.check_post("  ").await, Verdict::Allow);
     }
 
     #[tokio::test]
@@ -1156,7 +1157,7 @@ mod tests {
             8,
             Duration::from_secs(2),
         );
-        assert!(!moderator.allows_post("hello").await);
+        assert_eq!(moderator.check_post("hello").await, Verdict::Refuse);
 
         let broken = Router::new().route(
             "/v1/systemone",
@@ -1169,6 +1170,6 @@ mod tests {
             8,
             Duration::from_secs(2),
         );
-        assert!(!moderator.allows_post("hello").await);
+        assert_eq!(moderator.check_post("hello").await, Verdict::Unusable);
     }
 }

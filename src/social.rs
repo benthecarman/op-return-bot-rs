@@ -7,7 +7,7 @@ use reqwest_oauth1::{OAuthClientProvider, Secrets};
 use crate::{
     AppConfig, AppError, AppResult,
     config::{NostrConfig, TelegramConfig, TwitterConfig},
-    moderation::Moderator,
+    moderation::{Moderator, Verdict},
     payment_service::{CreateRequest, PaymentService},
     repository::{AccountingReport, PaymentRecord, Repository},
 };
@@ -116,7 +116,12 @@ impl SocialPublisher {
         let announce = !record.request.no_twitter
             && !is_json_object
             && (self.nostr.is_some() || self.twitter.is_some());
-        if announce && self.moderator.allows_post(&message).await {
+        let verdict = if announce {
+            self.moderator.check_post(&message).await
+        } else {
+            Verdict::Refuse
+        };
+        if announce && verdict == Verdict::Allow {
             if let Some(nostr) = &self.nostr {
                 let tagged = tagged_public_key(nip5_public_key, &message);
                 match nostr.publish(&message, &link, tagged).await {
@@ -132,8 +137,10 @@ impl SocialPublisher {
                     Err(error) => tracing::error!(%error, %txid, "could not publish tweet"),
                 }
             }
+        } else if announce && verdict == Verdict::Refuse {
+            tracing::info!(%txid, "skipped Twitter and Nostr because the content check refused");
         } else if announce {
-            tracing::info!(%txid, "skipped Twitter and Nostr after the content check");
+            tracing::warn!(%txid, "skipped Twitter and Nostr because the content check did not answer");
         }
         if let Some(telegram) = &self.telegram
             && let Err(error) = telegram

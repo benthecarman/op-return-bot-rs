@@ -30,6 +30,9 @@ const TARGET_LONG_SIDE: f32 = 1024.0;
 /// Stay under the renderer's `u16` pixel limit.
 const MAX_PIXEL: f32 = 2048.0;
 const MAX_PDF_DEPTH: usize = 32;
+/// Lowercase markers of SVG markup and `data:` image URLs. The namespace
+/// catches an SVG root that uses another prefix.
+const DRAWN_TEXT_MARKERS: [&[u8]; 3] = [b"<svg", b"www.w3.org/2000/svg", b"data:image/"];
 /// How far into a payload a PDF reader looks for the `%PDF-` header.
 const PDF_HEADER_WINDOW: usize = 1024;
 
@@ -133,12 +136,13 @@ impl Moderator {
 
     /// Screen a payload before it is stored.
     ///
-    /// Plain text is stored without a check. Anything else must pass the
-    /// decision service, whichever form field it came from.
+    /// Plain text is stored without asking the decision service, unless it
+    /// is markup that draws an image. Anything else must pass the decision
+    /// service, whichever form field it came from.
     pub async fn screen(&self, bytes: &[u8]) -> AppResult<()> {
         let kind = classify(bytes);
         if kind == FileKind::Text {
-            return Ok(());
+            return refuse_drawn_text(bytes);
         }
         match &self.inner {
             Mode::Skip => Ok(()),
@@ -386,6 +390,23 @@ fn classify(bytes: &[u8]) -> FileKind {
     } else {
         FileKind::Unsupported
     }
+}
+
+/// Text that a browser draws as an image when the bytes are saved as a
+/// file. The decision service would only read the markup, so this text is
+/// refused instead of checked.
+fn refuse_drawn_text(bytes: &[u8]) -> AppResult<()> {
+    let lower = bytes.to_ascii_lowercase();
+    let draws = DRAWN_TEXT_MARKERS
+        .iter()
+        .any(|marker| lower.windows(marker.len()).any(|window| window == *marker));
+    if draws {
+        tracing::info!("refused text that contains SVG or an inline image");
+        return Err(AppError::InvalidRequest(
+            "SVG and inline images cannot be published".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// PDF readers look for the header anywhere in the first kilobyte, so a
@@ -842,6 +863,25 @@ mod tests {
         .screen(b"hello")
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn refuses_text_that_draws_an_image() {
+        let moderator = Moderator {
+            inner: Mode::Closed,
+        };
+        for text in [
+            &b"<SVG viewBox='0 0 1 1'><rect/></SVG>"[..],
+            b"<x:svg xmlns:x=\"http://www.w3.org/2000/svg\"/>",
+            b"<img src=\"DATA:image/png;base64,iVBORw0KGgo=\">",
+        ] {
+            let error = moderator.screen(text).await.unwrap_err();
+            assert!(matches!(error, AppError::InvalidRequest(_)));
+        }
+        moderator
+            .screen(b"an svg is an image format")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

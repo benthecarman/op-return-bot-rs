@@ -6,7 +6,7 @@ use op_return_bot::{
     domain::{LightningBackend, PaymentStatus},
     repository::{
         CompletedRequest, ExpiredCandidate, NewInvoice, NewNip5, NewOffer, NewOnChainPayment,
-        NewRequest, NewZap, Repository,
+        NewRequest, NewZap, RefusedFile, Repository,
     },
 };
 use tempfile::TempDir;
@@ -774,5 +774,36 @@ async fn stores_and_pays_a_bolt12_offer() {
             .unwrap()
             .payment_hash,
         Some(hash)
+    );
+}
+
+#[tokio::test]
+async fn remembers_refused_files_by_hash() {
+    let (_directory, database) = database().await;
+    let repository = Repository::new(database);
+    assert!(!repository.file_was_refused("ab").await.unwrap());
+    let refused = RefusedFile {
+        sha256: "ab",
+        dhash: Some(0xf0f0_0000_0000_0f0f),
+        size: 10,
+        kind: "image",
+        refused_at: 1_788_000_000,
+    };
+    repository.record_refused_file(&refused).await.unwrap();
+    repository.record_refused_file(&refused).await.unwrap();
+    repository
+        .record_refused_file(&RefusedFile {
+            sha256: "cd",
+            dhash: None,
+            kind: "pdf",
+            ..refused
+        })
+        .await
+        .unwrap();
+    assert!(repository.file_was_refused("ab").await.unwrap());
+    assert!(repository.file_was_refused("cd").await.unwrap());
+    assert_eq!(
+        repository.refused_image_hashes().await.unwrap(),
+        vec![0xf0f0_0000_0000_0f0f]
     );
 }

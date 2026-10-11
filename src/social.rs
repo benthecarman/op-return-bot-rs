@@ -137,7 +137,7 @@ impl SocialPublisher {
                     Err(error) => tracing::error!(%error, %txid, "could not publish tweet"),
                 }
             }
-        } else if announce && verdict == Verdict::Refuse {
+        } else if announce && matches!(verdict, Verdict::Refuse | Verdict::Unsure) {
             tracing::info!(%txid, "skipped Twitter and Nostr because the content check refused");
         } else if announce {
             tracing::warn!(%txid, "skipped Twitter and Nostr because the content check did not answer");

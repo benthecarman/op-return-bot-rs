@@ -23,8 +23,12 @@ The Rust service keeps these production interfaces.
   the decision is allow and the confidence is at least the configured
   floor. A refusal shows "This file cannot be published." A check that
   does not answer shows "This file could not be checked. Try again."
-  Nothing is stored in either case. A public typed message is still
-  stored. It is posted to Twitter and Nostr only when a separate
+  Nothing is stored in either case. A file the service refuses is
+  remembered by its SHA-256, and an image also by a difference hash. The
+  file itself is never kept. The same file, or a rescaled or re-saved
+  copy of a refused image, is then refused without asking the service.
+  An allow below the floor is not remembered. A public typed message is
+  still stored. It is posted to Twitter and Nostr only when a separate
   decision allows that post. A refusal, a low confidence, or a check
   that does not answer skips those posts. The transaction is still
   published. `moderation.allow_unscreened` skips both checks. Until

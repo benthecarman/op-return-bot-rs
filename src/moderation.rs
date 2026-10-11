@@ -2,18 +2,30 @@
 //!
 //! A payload that is not plain text is stored only when the decision
 //! service chooses `allow` with confidence at or above the configured
-//! floor. Plain text is always stored. Twitter and Nostr hear about it only when a separate decision
-//! allows the post.
+//! floor. Plain text is always stored. Twitter and Nostr hear about it
+//! only when a separate decision allows the post. Files the service
+//! refuses are remembered by hash, so a resubmission is refused without
+//! asking again.
 
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    io::Cursor,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use image::ImageEncoder;
+use image::{ImageEncoder, ImageReader, Limits, imageops::FilterType};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use tokio::{sync::Semaphore, time::Instant};
 use url::Url;
 
-use crate::{AppError, AppResult, config::ModerationConfig};
+use crate::{
+    AppError, AppResult,
+    config::ModerationConfig,
+    repository::{RefusedFile, Repository},
+};
 
 const PUBLISH_INSTRUCTIONS: &str = "Can this be published on a public permanent ledger?";
 const PUBLISH_ALLOW: &str = "Content that is legal to publish.";
@@ -34,6 +46,15 @@ const MAX_PIXEL: f32 = 2048.0;
 const MAX_RENDERS: usize = 4;
 /// How far into a payload a PDF reader looks for the `%PDF-` header.
 const PDF_HEADER_WINDOW: usize = 1024;
+/// An image whose difference hash is this many bits or fewer from a
+/// refused image is a near copy of it.
+const MAX_DHASH_DISTANCE: u32 = 4;
+/// A hash with fewer set or clear bits than this comes from a flat or
+/// plain gradient image, and would match many unrelated images.
+const MIN_DHASH_BITS: u32 = 8;
+/// Decoding limits for hashing, so a small file cannot claim a huge canvas.
+const MAX_HASH_SIDE: u32 = 16_384;
+const MAX_HASH_ALLOC: u64 = 256 * 1024 * 1024;
 
 #[derive(Clone, Default)]
 pub struct Moderator {
@@ -61,6 +82,8 @@ struct LiveModerator {
     /// Render slots. A slot stays taken until its render ends, even after
     /// the wait for it has given up.
     renders: Arc<Semaphore>,
+    /// Where refused files are remembered. Tests may run without it.
+    refusals: Option<Repository>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,10 +99,12 @@ struct Submission {
     state: String,
     files: Vec<String>,
     kind: &'static str,
+    /// Difference hash of an image, when it could be decoded.
+    dhash: Option<u64>,
 }
 
 impl Moderator {
-    pub async fn connect(config: &ModerationConfig) -> AppResult<Self> {
+    pub async fn connect(config: &ModerationConfig, refusals: Repository) -> AppResult<Self> {
         if config.allow_unscreened {
             tracing::warn!("files and social posts are accepted without a content check");
             return Ok(Self { inner: Mode::Skip });
@@ -123,6 +148,7 @@ impl Moderator {
                 max_pdf_pages: config.max_pdf_pages,
                 timeout,
                 renders: Arc::new(Semaphore::new(MAX_RENDERS)),
+                refusals: Some(refusals),
             })),
         })
     }
@@ -169,6 +195,11 @@ impl Moderator {
 
 impl LiveModerator {
     async fn screen(&self, bytes: &[u8], kind: FileKind) -> AppResult<()> {
+        let sha256 = hex::encode(Sha256::digest(bytes));
+        if self.was_refused(&sha256).await {
+            tracing::info!(%sha256, "file screen refused a file it refused before");
+            return Err(AppError::Unpublishable);
+        }
         let deadline = Instant::now() + self.timeout;
         // Every slot taken is a passing state, so the visitor may try again.
         let slot = tokio::time::timeout_at(deadline, self.renders.clone().acquire_owned())
@@ -194,6 +225,12 @@ impl LiveModerator {
             tracing::info!("file screen stored a file it could not prepare");
             return Ok(());
         };
+        if let Some(dhash) = submission.dhash
+            && self.near_refused_image(dhash).await
+        {
+            tracing::info!(%sha256, "file screen refused a near copy of a refused image");
+            return Err(AppError::Unpublishable);
+        }
         tracing::info!(
             kind = submission.kind,
             files = submission.files.len(),
@@ -226,8 +263,64 @@ impl LiveModerator {
         })?;
         match interpret_decision(&body, "publish", self.floor, "file screen") {
             Verdict::Allow => Ok(()),
-            Verdict::Refuse => Err(AppError::Unpublishable),
+            Verdict::Refuse => {
+                self.remember(&sha256, &submission, bytes.len()).await;
+                Err(AppError::Unpublishable)
+            }
+            // An unsure allow is not remembered, so a lower floor can let
+            // the same file through later.
+            Verdict::Unsure => Err(AppError::Unpublishable),
             Verdict::Unusable => Err(AppError::FileCheckFailed),
+        }
+    }
+
+    /// Memory lookups are best effort. A database error skips them.
+    async fn was_refused(&self, sha256: &str) -> bool {
+        let Some(refusals) = &self.refusals else {
+            return false;
+        };
+        refusals
+            .file_was_refused(sha256)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "could not look up refused files");
+                false
+            })
+    }
+
+    async fn near_refused_image(&self, dhash: u64) -> bool {
+        let Some(refusals) = &self.refusals else {
+            return false;
+        };
+        match refusals.refused_image_hashes().await {
+            Ok(hashes) => hashes
+                .iter()
+                .any(|refused| (refused ^ dhash).count_ones() <= MAX_DHASH_DISTANCE),
+            Err(error) => {
+                tracing::warn!(%error, "could not look up refused images");
+                false
+            }
+        }
+    }
+
+    async fn remember(&self, sha256: &str, submission: &Submission, size: usize) {
+        let Some(refusals) = &self.refusals else {
+            return;
+        };
+        let refused_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| {
+                i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+            });
+        let file = RefusedFile {
+            sha256,
+            dhash: submission.dhash,
+            size: i64::try_from(size).unwrap_or(i64::MAX),
+            kind: submission.kind,
+            refused_at,
+        };
+        if let Err(error) = refusals.record_refused_file(&file).await {
+            tracing::warn!(%error, "could not remember a refused file");
         }
     }
 
@@ -290,8 +383,9 @@ const POST: Question = Question {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
     Allow,
-    /// A refusal, or an allow below the confidence floor.
     Refuse,
+    /// An allow below the confidence floor.
+    Unsure,
     /// The check did not return a usable decision.
     Unusable,
 }
@@ -358,7 +452,7 @@ fn interpret_decision(body: &DecisionBody, question: &str, floor: f64, check: &s
             floor,
             "content check confidence was below the floor"
         );
-        return Verdict::Refuse;
+        return Verdict::Unsure;
     }
     let shown: String = choice.chars().take(32).collect();
     tracing::warn!(check, choice = %shown, "content check returned an unusable choice");
@@ -375,9 +469,42 @@ fn prepare(bytes: &[u8], kind: FileKind, max_pages: usize) -> Option<Submission>
             state: IMAGE_NOTE.to_owned(),
             files: vec![data_url(mime, bytes)],
             kind: "image",
+            dhash: dhash(bytes),
         }),
         FileKind::Pdf => prepare_pdf(bytes, max_pages),
     }
+}
+
+/// Difference hash of an image: each bit says whether a pixel of a 9 by 8
+/// grey thumbnail is darker than its right neighbour. A near copy, such as
+/// the same picture rescaled or saved again, differs in only a few bits.
+fn dhash(bytes: &[u8]) -> Option<u64> {
+    let mut reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_HASH_SIDE);
+    limits.max_image_height = Some(MAX_HASH_SIDE);
+    limits.max_alloc = Some(MAX_HASH_ALLOC);
+    reader.limits(limits);
+    let thumbnail = reader
+        .decode()
+        .ok()?
+        .resize_exact(9, 8, FilterType::Triangle)
+        .to_luma8();
+    let mut hash = 0_u64;
+    for y in 0..8 {
+        for x in 0..8 {
+            hash <<= 1;
+            if thumbnail.get_pixel(x, y)[0] < thumbnail.get_pixel(x + 1, y)[0] {
+                hash |= 1;
+            }
+        }
+    }
+    let ones = hash.count_ones();
+    (MIN_DHASH_BITS..=64 - MIN_DHASH_BITS)
+        .contains(&ones)
+        .then_some(hash)
 }
 
 fn classify(bytes: &[u8]) -> FileKind {
@@ -420,6 +547,7 @@ fn prepare_pdf(bytes: &[u8], max_pages: usize) -> Option<Submission> {
         state: text.unwrap_or_else(|| PDF_NO_TEXT.to_owned()),
         files,
         kind: "pdf",
+        dhash: None,
     })
 }
 
@@ -550,7 +678,10 @@ fn data_url(mime: &str, bytes: &[u8]) -> String {
 mod tests {
     use std::{
         net::SocketAddr,
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
     };
 
     use axum::{
@@ -612,6 +743,7 @@ mod tests {
                 max_pdf_pages: pages,
                 timeout,
                 renders: Arc::new(Semaphore::new(slots)),
+                refusals: None,
             })),
         }
     }
@@ -746,7 +878,7 @@ mod tests {
     #[test]
     fn allows_only_a_confident_allow() {
         assert_eq!(verdict(Some("allow"), Some(0.9)), Verdict::Allow);
-        assert_eq!(verdict(Some("allow"), Some(0.89)), Verdict::Refuse);
+        assert_eq!(verdict(Some("allow"), Some(0.89)), Verdict::Unsure);
         assert_eq!(verdict(Some("refuse"), Some(0.99)), Verdict::Refuse);
         assert_eq!(verdict(Some("allow"), None), Verdict::Unusable);
         assert_eq!(verdict(Some("maybe"), Some(1.0)), Verdict::Unusable);
@@ -1071,5 +1203,134 @@ mod tests {
             Duration::from_secs(2),
         );
         assert_eq!(moderator.check_post("hello").await, Verdict::Unusable);
+    }
+
+    /// A smooth test picture. `phase` shifts the pattern, which gives an
+    /// unrelated picture.
+    fn picture(phase: f32) -> image::RgbImage {
+        image::RgbImage::from_fn(64, 64, |x, y| {
+            #[allow(clippy::cast_precision_loss)]
+            let (u, v) = (x as f32 / 64.0, y as f32 / 64.0);
+            let wave = (std::f32::consts::TAU * (u * 1.5 + phase)).sin()
+                * (std::f32::consts::TAU * (v + phase / 2.0)).cos();
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let value = (127.0 + 120.0 * wave) as u8;
+            image::Rgb([value, 255 - value, 90])
+        })
+    }
+
+    /// The same picture shrunk and saved again as a JPEG.
+    fn near_copy(image: &image::RgbImage) -> Vec<u8> {
+        let small = image::imageops::resize(image, 48, 48, FilterType::Triangle);
+        let mut bytes = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 70)
+            .write_image(small.as_raw(), 48, 48, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        bytes
+    }
+
+    fn png(image: &image::RgbImage) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut bytes)
+            .write_image(
+                image.as_raw(),
+                image.width(),
+                image.height(),
+                image::ExtendedColorType::Rgb8,
+            )
+            .unwrap();
+        bytes
+    }
+
+    #[test]
+    fn hashes_near_copies_close_and_other_images_apart() {
+        let original = dhash(&png(&picture(0.0))).unwrap();
+        let copy = dhash(&near_copy(&picture(0.0))).unwrap();
+        let other = dhash(&png(&picture(0.4))).unwrap();
+        assert!((original ^ copy).count_ones() <= MAX_DHASH_DISTANCE);
+        assert!((original ^ other).count_ones() > MAX_DHASH_DISTANCE);
+    }
+
+    #[test]
+    fn does_not_hash_a_flat_image() {
+        let flat = image::RgbImage::from_pixel(32, 32, image::Rgb([200, 10, 10]));
+        assert!(dhash(&png(&flat)).is_none());
+        assert!(dhash(b"\x89PNG\r\n\x1a\nbroken").is_none());
+    }
+
+    async fn remembering(url: &str) -> (Moderator, tempfile::TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        let database = crate::Database::connect(&crate::config::DatabaseConfig {
+            path: directory.path().join("test.sqlite"),
+            max_connections: 1,
+            busy_timeout_seconds: 1,
+        })
+        .await
+        .unwrap();
+        database.migrate().await.unwrap();
+        let mut moderator = live(url, 0.9, 8, Duration::from_secs(2));
+        let Mode::Live(live) = &mut moderator.inner else {
+            unreachable!();
+        };
+        live.refusals = Some(Repository::new(database));
+        (moderator, directory)
+    }
+
+    /// A decision service that answers every check with `choice` and counts
+    /// the calls.
+    async fn counting(choice: &'static str, confidence: f64) -> (String, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route(
+                "/v1/systemone",
+                post(move |State(calls): State<Arc<AtomicUsize>>| async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({
+                        "answers": { "publish": { "choice": choice, "confidence": confidence } }
+                    }))
+                }),
+            )
+            .with_state(calls.clone());
+        let address = serve(app).await;
+        (format!("http://{address}/v1/systemone"), calls)
+    }
+
+    #[tokio::test]
+    async fn refuses_a_refused_file_again_without_asking() {
+        let (url, calls) = counting("refuse", 0.99).await;
+        let (moderator, _directory) = remembering(&url).await;
+        let file = png(&picture(0.0));
+        for _ in 0..2 {
+            let error = moderator.screen(&file).await.unwrap_err();
+            assert!(matches!(error, AppError::Unpublishable));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn refuses_a_near_copy_of_a_refused_image_without_asking() {
+        let (url, calls) = counting("refuse", 0.99).await;
+        let (moderator, _directory) = remembering(&url).await;
+        moderator.screen(&png(&picture(0.0))).await.unwrap_err();
+        let error = moderator
+            .screen(&near_copy(&picture(0.0)))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, AppError::Unpublishable));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        moderator.screen(&png(&picture(0.4))).await.unwrap_err();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn does_not_remember_an_unsure_allow() {
+        let (url, calls) = counting("allow", 0.2).await;
+        let (moderator, _directory) = remembering(&url).await;
+        let file = png(&picture(0.0));
+        for _ in 0..2 {
+            let error = moderator.screen(&file).await.unwrap_err();
+            assert!(matches!(error, AppError::Unpublishable));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }

@@ -38,7 +38,8 @@ async fn main() -> anyhow::Result<()> {
     let bind_address = config.server.bind_address();
     let bitcoin = BitcoinClient::connect(&config.bitcoin).await?;
     let lightning = lightning::connect(&config.lightning).await?;
-    let moderator = Moderator::connect(&config.moderation).await?;
+    let moderator =
+        Moderator::connect(&config.moderation, Repository::new(database.clone())).await?;
     let social = SocialPublisher::connect(&config, moderator.clone()).await?;
     let config = std::sync::Arc::new(config);
     let repository = Repository::new(database.clone());

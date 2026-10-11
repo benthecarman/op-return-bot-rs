@@ -62,6 +62,18 @@ pub struct NewZap<'a> {
     pub created_at: i64,
 }
 
+/// A file the decision service refused. Only its hashes are kept.
+#[derive(Clone, Debug)]
+pub struct RefusedFile<'a> {
+    /// Lowercase hex SHA-256 of the file.
+    pub sha256: &'a str,
+    /// Difference hash of an image.
+    pub dhash: Option<u64>,
+    pub size: i64,
+    pub kind: &'a str,
+    pub refused_at: i64,
+}
+
 #[derive(Clone, Debug)]
 pub struct PaymentRecord {
     pub request: OpReturnRequest,
@@ -816,6 +828,44 @@ impl Repository {
         .execute(self.database.pool())
         .await?;
         Ok(())
+    }
+
+    pub async fn record_refused_file(&self, file: &RefusedFile<'_>) -> AppResult<()> {
+        sqlx::query(
+            "INSERT INTO refused_files (sha256, dhash, size, kind, refused_at) \
+             VALUES (?, ?, ?, ?, ?) ON CONFLICT(sha256) DO NOTHING",
+        )
+        .bind(file.sha256)
+        .bind(
+            file.dhash
+                .map(|hash| i64::from_be_bytes(hash.to_be_bytes())),
+        )
+        .bind(file.size)
+        .bind(file.kind)
+        .bind(file.refused_at)
+        .execute(self.database.pool())
+        .await?;
+        Ok(())
+    }
+
+    pub async fn file_was_refused(&self, sha256: &str) -> AppResult<bool> {
+        let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM refused_files WHERE sha256 = ?")
+            .bind(sha256)
+            .fetch_optional(self.database.pool())
+            .await?;
+        Ok(found.is_some())
+    }
+
+    /// Difference hashes of every refused image.
+    pub async fn refused_image_hashes(&self) -> AppResult<Vec<u64>> {
+        let hashes: Vec<i64> =
+            sqlx::query_scalar("SELECT dhash FROM refused_files WHERE dhash IS NOT NULL")
+                .fetch_all(self.database.pool())
+                .await?;
+        Ok(hashes
+            .into_iter()
+            .map(|hash| u64::from_be_bytes(hash.to_be_bytes()))
+            .collect())
     }
 
     /// All-time totals for the Telegram report.

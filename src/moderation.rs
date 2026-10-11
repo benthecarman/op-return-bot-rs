@@ -35,8 +35,11 @@ const POST_ALLOW: &str = "Ordinary speech, including rude or political speech.";
 const POST_REFUSE: &str = "A slur, sexual content involving anyone under 18, or other content that would get a public social account banned.";
 const IMAGE_NOTE: &str = "The attached image is the file to publish.";
 const PDF_NO_TEXT: &str = "This PDF has no readable text layer. The attached images are its pages.";
-/// A text layer is cut to this length before it is sent.
-const MAX_STATE_BYTES: usize = 200_000;
+/// A text layer is cut to this length before it is sent. The service takes
+/// at most 32,000 tokens of state, and a token is at least one byte.
+const MAX_STATE_BYTES: usize = 30_000;
+/// The service takes at most this many images in one request.
+const MAX_IMAGES_PER_REQUEST: usize = 4;
 /// Longest side of a rendered PDF page, in pixels.
 const TARGET_LONG_SIDE: f32 = 1024.0;
 /// Stay under the renderer's `u16` pixel limit.
@@ -74,6 +77,7 @@ struct LiveModerator {
     client: reqwest::Client,
     url: Url,
     api_key: String,
+    /// Confidence a social post allow needs. Files have no floor.
     floor: f64,
     max_pdf_pages: usize,
     /// Covers the whole check of one file: the wait for a render slot, the
@@ -231,21 +235,47 @@ impl LiveModerator {
             tracing::info!(%sha256, "file screen refused a near copy of a refused image");
             return Err(AppError::Unpublishable);
         }
-        tracing::info!(
-            kind = submission.kind,
-            files = submission.files.len(),
-            "file screen asking for a decision"
-        );
+        // The service takes a few images per request, so the pages of a long
+        // PDF are asked about in batches. A refusal of any batch refuses the
+        // file.
+        let batches: Vec<&[String]> = if submission.files.is_empty() {
+            vec![&[]]
+        } else {
+            submission.files.chunks(MAX_IMAGES_PER_REQUEST).collect()
+        };
+        for images in batches {
+            tracing::info!(
+                kind = submission.kind,
+                images = images.len(),
+                "file screen asking for a decision"
+            );
+            let body = self.ask(&submission.state, images, deadline).await?;
+            // Best effort: only a refusal blocks a file. An allow stores it at
+            // any confidence, so no floor applies here.
+            match interpret_decision(&body, PUBLISH.name, 0.0, "file screen") {
+                Verdict::Allow | Verdict::Unsure => {}
+                Verdict::Refuse => {
+                    self.remember(&sha256, &submission, bytes.len()).await;
+                    return Err(AppError::Unpublishable);
+                }
+                Verdict::Unusable => return Err(AppError::FileCheckFailed),
+            }
+        }
+        Ok(())
+    }
+
+    async fn ask(
+        &self,
+        state: &str,
+        images: &[String],
+        deadline: Instant,
+    ) -> AppResult<DecisionBody> {
         let response = self
             .client
             .post(self.url.clone())
             .bearer_auth(&self.api_key)
             .timeout(deadline.saturating_duration_since(Instant::now()))
-            .json(&request_body(
-                &submission.state,
-                &submission.files,
-                &PUBLISH,
-            ))
+            .json(&request_body(state, images, &PUBLISH))
             .send()
             .await
             .map_err(|error| {
@@ -257,21 +287,10 @@ impl LiveModerator {
             tracing::warn!(%status, "file screen request was rejected");
             return Err(AppError::FileCheckFailed);
         }
-        let body = response.json().await.map_err(|_| {
+        response.json().await.map_err(|_| {
             tracing::warn!("file screen returned a decision that could not be read");
             AppError::FileCheckFailed
-        })?;
-        match interpret_decision(&body, "publish", self.floor, "file screen") {
-            Verdict::Allow => Ok(()),
-            Verdict::Refuse => {
-                self.remember(&sha256, &submission, bytes.len()).await;
-                Err(AppError::Unpublishable)
-            }
-            // An unsure allow is not remembered, so a lower floor can let
-            // the same file through later.
-            Verdict::Unsure => Err(AppError::Unpublishable),
-            Verdict::Unusable => Err(AppError::FileCheckFailed),
-        }
+        })
     }
 
     /// Memory lookups are best effort. A database error skips them.
@@ -390,7 +409,7 @@ pub enum Verdict {
     Unusable,
 }
 
-fn request_body(state: &str, files: &[String], question: &Question) -> serde_json::Value {
+fn request_body(state: &str, images: &[String], question: &Question) -> serde_json::Value {
     let mut body = serde_json::json!({
         "state": state,
         "questions": {}
@@ -403,8 +422,8 @@ fn request_body(state: &str, files: &[String], question: &Question) -> serde_jso
             "refuse": question.refuse
         }
     });
-    if !files.is_empty() {
-        body["files"] = serde_json::json!(files);
+    if !images.is_empty() {
+        body["images"] = serde_json::json!(images);
     }
     body
 }
@@ -963,7 +982,7 @@ mod tests {
         );
         moderator.screen(IMAGE).await.unwrap();
         let body = seen.lock().unwrap().clone().unwrap();
-        let file = body["files"][0].as_str().unwrap();
+        let file = body["images"][0].as_str().unwrap();
         assert!(file.starts_with("data:image/gif;base64,"));
         assert_eq!(body["state"], IMAGE_NOTE);
         assert_eq!(body["questions"]["publish"]["type"], "choice");
@@ -1005,7 +1024,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refuses_when_the_model_refuses_or_is_unsure() {
+    async fn refuses_only_when_the_model_refuses() {
         let address = serve(Router::new().route(
             "/v1/systemone",
             post(|| async {
@@ -1039,8 +1058,7 @@ mod tests {
             8,
             Duration::from_secs(2),
         );
-        let error = moderator.screen(IMAGE).await.unwrap_err();
-        assert!(matches!(error, AppError::Unpublishable));
+        moderator.screen(IMAGE).await.unwrap();
     }
 
     #[tokio::test]
@@ -1150,7 +1168,7 @@ mod tests {
         assert_eq!(moderator.check_post("hello").await, Verdict::Allow);
         let body = seen.lock().unwrap().clone().unwrap();
         assert_eq!(body["state"], "hello");
-        assert!(body.get("files").is_none());
+        assert!(body.get("images").is_none());
         assert_eq!(body["questions"]["post"]["instructions"], POST_INSTRUCTIONS);
         assert_eq!(body["questions"]["post"]["criteria"]["allow"], POST_ALLOW);
         assert_eq!(body["questions"]["post"]["criteria"]["refuse"], POST_REFUSE);
@@ -1323,14 +1341,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn does_not_remember_an_unsure_allow() {
+    async fn does_not_remember_a_low_confidence_allow() {
         let (url, calls) = counting("allow", 0.2).await;
         let (moderator, _directory) = remembering(&url).await;
         let file = png(&picture(0.0));
         for _ in 0..2 {
-            let error = moderator.screen(&file).await.unwrap_err();
-            assert!(matches!(error, AppError::Unpublishable));
+            moderator.screen(&file).await.unwrap();
         }
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn asks_about_pdf_pages_in_batches() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let app = Router::new()
+            .route(
+                "/v1/systemone",
+                post(
+                    |State(seen): State<Arc<Mutex<Vec<usize>>>>,
+                     Json(body): Json<serde_json::Value>| async move {
+                        let images = body["images"].as_array().map_or(0, Vec::len);
+                        seen.lock().unwrap().push(images);
+                        Json(json!({
+                            "answers": { "publish": { "choice": "allow", "confidence": 0.95 } }
+                        }))
+                    },
+                ),
+            )
+            .with_state(seen.clone());
+        let address = serve(app).await;
+        let moderator = live(
+            &format!("http://{address}/v1/systemone"),
+            0.9,
+            8,
+            Duration::from_secs(10),
+        );
+        let pdf = pdf_with_pages(&["1", "2", "3", "4", "5", "6"]);
+        moderator.screen(&pdf).await.unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec![4, 2]);
     }
 }

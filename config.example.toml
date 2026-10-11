@@ -67,6 +67,9 @@ slipstream_url = "https://slipstream.mara.com/api/transactions"
 # Image and PDF uploads are refused until url and api_key_file are both set.
 # Social posts go out until then.
 # Set allow_unscreened = true to skip both checks.
+# A file is refused only when the service refuses it. confidence_floor
+# applies to social posts. It measures how peaked the answer is, so 0.9
+# needs about 98.7% probability on a two-option question.
 [moderation]
 allow_unscreened = false
 url = "https://moderation.example.ts.net/v1/systemone"

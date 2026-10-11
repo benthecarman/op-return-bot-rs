@@ -17,24 +17,26 @@ The Rust service keeps these production interfaces.
   without a check. JPEG, PNG, GIF, and WEBP go to the decision service
   as images. A payload with `%PDF-` in its first kilobyte is a PDF. The
   first `moderation.max_pdf_pages` pages that render go to the service
-  as images, with the text layer cut to 200,000 bytes. Any other file
-  type, a PDF the service cannot be shown, and a file too slow to
-  prepare are stored without a check. A checked file is stored only when
-  the decision is allow and the confidence is at least the configured
-  floor. A refusal shows "This file cannot be published." A check that
-  does not answer shows "This file could not be checked. Try again."
-  Nothing is stored in either case. A file the service refuses is
-  remembered by its SHA-256, and an image also by a difference hash. The
-  file itself is never kept. The same file, or a rescaled or re-saved
-  copy of a refused image, is then refused without asking the service.
-  An allow below the floor is not remembered. A public typed message is
-  still stored. It is posted to Twitter and Nostr only when a separate
-  decision allows that post. A refusal, a low confidence, or a check
-  that does not answer skips those posts. The transaction is still
-  published. `moderation.allow_unscreened` skips both checks. Until
-  `url` and `api_key_file` are both set, images and PDFs are refused and
-  posts go out as before. Create routes still accept URL-encoded and
-  JSON bodies, and those routes also accept the same `file` field.
+  as images, four images per request, with the text layer cut to 30,000
+  bytes. Any other file type, a PDF the service cannot be shown, and a
+  file too slow to prepare are stored without a check. A checked file is
+  refused only when the decision is refuse. An allow stores it at any
+  confidence. A refusal shows "This file cannot be published." A check
+  that does not answer shows "This file could not be checked. Try
+  again." Nothing is stored in either case. A file the service refuses
+  is remembered by its SHA-256, and an image also by a difference hash.
+  The file itself is never kept. The same file, or a rescaled or
+  re-saved copy of a refused image, is then refused without asking the
+  service. A public typed message is still stored. It is posted to
+  Twitter and Nostr only when a separate decision allows that post with
+  confidence at least `moderation.confidence_floor`. Confidence is how
+  peaked the answer is, not its probability. A refusal, a low
+  confidence, or a check that does not answer skips those posts. The
+  transaction is still published. `moderation.allow_unscreened` skips
+  both checks. Until `url` and `api_key_file` are both set, images and
+  PDFs are refused and posts go out as before. Create routes still
+  accept URL-encoded and JSON bodies, and those routes also accept the
+  same `file` field.
 - Nostr and LNURL: `/.well-known/nostr.json`,
   `/.well-known/lnurlp/{user}`, and `/lnurlp/{metadata}`
 - Utilities: `/qr` for invoices this service created, and

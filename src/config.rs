@@ -256,6 +256,8 @@ pub struct ExternalConfig {
 
 /// Image and PDF uploads are refused until `url` and `api_key_file` are both set.
 /// Social posts go out until then. `allow_unscreened` skips both checks.
+/// `confidence_floor` applies to social posts only. A file is refused only
+/// when the service refuses it.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModerationConfig {

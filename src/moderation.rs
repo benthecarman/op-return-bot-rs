@@ -15,9 +15,6 @@ use url::Url;
 
 use crate::{AppError, AppResult, config::ModerationConfig};
 
-mod pdf;
-mod raster;
-
 const PUBLISH_INSTRUCTIONS: &str = "Can this be published on a public permanent ledger?";
 const PUBLISH_ALLOW: &str = "Content that is legal to publish.";
 const PUBLISH_REFUSE: &str = "Sexual content involving anyone under 18, or other content that is illegal to publish or possess.";
@@ -37,9 +34,6 @@ const MAX_PDF_DEPTH: usize = 32;
 /// Files prepared at once. A render that will not end holds its slot, so
 /// this bounds the threads and memory such files can take.
 const MAX_RENDERS: usize = 4;
-/// Lowercase markers of SVG markup and `data:` image URLs. The namespace
-/// catches an SVG root that uses another prefix.
-const DRAWN_TEXT_MARKERS: [&[u8]; 3] = [b"<svg", b"www.w3.org/2000/svg", b"data:image/"];
 /// How far into a payload a PDF reader looks for the `%PDF-` header.
 const PDF_HEADER_WINDOW: usize = 1024;
 
@@ -137,13 +131,12 @@ impl Moderator {
 
     /// Screen a payload before it is stored.
     ///
-    /// Plain text is stored without asking the decision service, unless it
-    /// is markup that draws an image. Anything else must pass the decision
-    /// service, whichever form field it came from.
+    /// Plain text is stored without a check. Anything else must pass the
+    /// decision service, whichever form field it came from.
     pub async fn screen(&self, bytes: &[u8]) -> AppResult<()> {
         let kind = classify(bytes);
         if kind == FileKind::Text {
-            return refuse_drawn_text(bytes);
+            return Ok(());
         }
         match &self.inner {
             Mode::Skip => Ok(()),
@@ -380,17 +373,11 @@ fn prepare(bytes: &[u8], kind: FileKind, max_pages: usize) -> AppResult<Submissi
             tracing::info!("file screen refused an unsupported file");
             Err(AppError::Unpublishable)
         }
-        FileKind::Image(mime) => {
-            if let Err(reason) = raster::check(mime, bytes) {
-                tracing::info!(reason, "file screen refused an image");
-                return Err(AppError::Unpublishable);
-            }
-            Ok(Submission {
-                state: IMAGE_NOTE.to_owned(),
-                files: vec![data_url(mime, bytes)],
-                kind: "image",
-            })
-        }
+        FileKind::Image(mime) => Ok(Submission {
+            state: IMAGE_NOTE.to_owned(),
+            files: vec![data_url(mime, bytes)],
+            kind: "image",
+        }),
         FileKind::Pdf => prepare_pdf(bytes, max_pages),
     }
 }
@@ -413,23 +400,6 @@ fn classify(bytes: &[u8]) -> FileKind {
     }
 }
 
-/// Text that a browser draws as an image when the bytes are saved as a
-/// file. The decision service would only read the markup, so this text is
-/// refused instead of checked.
-fn refuse_drawn_text(bytes: &[u8]) -> AppResult<()> {
-    let lower = bytes.to_ascii_lowercase();
-    let draws = DRAWN_TEXT_MARKERS
-        .iter()
-        .any(|marker| lower.windows(marker.len()).any(|window| window == *marker));
-    if draws {
-        tracing::info!("refused text that contains SVG or an inline image");
-        return Err(AppError::InvalidRequest(
-            "SVG and inline images cannot be published".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
 /// PDF readers look for the header anywhere in the first kilobyte, so a
 /// text prefix must not hide a PDF from the check.
 fn is_pdf(bytes: &[u8]) -> bool {
@@ -439,16 +409,8 @@ fn is_pdf(bytes: &[u8]) -> bool {
 }
 
 fn prepare_pdf(bytes: &[u8], max_pages: usize) -> AppResult<Submission> {
-    let document = lopdf::Document::load_mem(bytes).map_err(|_| {
-        tracing::info!("file screen refused a pdf it could not read");
-        AppError::Unpublishable
-    })?;
-    if embedded_file(&document) {
+    if embedded_file(bytes)? {
         tracing::info!("file screen refused a pdf with an embedded file");
-        return Err(AppError::Unpublishable);
-    }
-    if let Err(reason) = pdf::check(bytes, &document) {
-        tracing::info!(reason, "file screen refused a pdf");
         return Err(AppError::Unpublishable);
     }
     let state = pdf_state(bytes)?;
@@ -464,11 +426,15 @@ fn prepare_pdf(bytes: &[u8], max_pages: usize) -> AppResult<Submission> {
     })
 }
 
-fn embedded_file(document: &lopdf::Document) -> bool {
-    document
+fn embedded_file(bytes: &[u8]) -> AppResult<bool> {
+    let document = lopdf::Document::load_mem(bytes).map_err(|_| {
+        tracing::info!("file screen refused a pdf it could not read");
+        AppError::Unpublishable
+    })?;
+    Ok(document
         .objects
         .values()
-        .any(|object| object_has_embedded(object, 0))
+        .any(|object| object_has_embedded(object, 0)))
 }
 
 fn object_has_embedded(object: &lopdf::Object, depth: usize) -> bool {
@@ -650,7 +616,7 @@ mod tests {
     use super::*;
 
     /// A payload the check treats as an image.
-    const IMAGE: &[u8] = raster::tests::GIF;
+    const IMAGE: &[u8] = b"GIF89ahello";
 
     fn prepare_file(bytes: &[u8], max_pages: usize) -> AppResult<Submission> {
         prepare(bytes, classify(bytes), max_pages)
@@ -740,7 +706,7 @@ mod tests {
         Json(json!({ "answers": answers }))
     }
 
-    pub(super) fn pdf_with_pages(texts: &[&str]) -> Vec<u8> {
+    fn pdf_with_pages(texts: &[&str]) -> Vec<u8> {
         let mut doc = Document::with_version("1.5");
         let parent_id = doc.new_object_id();
         let font_id = doc.add_object(dictionary! {
@@ -899,25 +865,6 @@ mod tests {
         .screen(b"hello")
         .await
         .unwrap();
-    }
-
-    #[tokio::test]
-    async fn refuses_text_that_draws_an_image() {
-        let moderator = Moderator {
-            inner: Mode::Closed,
-        };
-        for text in [
-            &b"<SVG viewBox='0 0 1 1'><rect/></SVG>"[..],
-            b"<x:svg xmlns:x=\"http://www.w3.org/2000/svg\"/>",
-            b"<img src=\"DATA:image/png;base64,iVBORw0KGgo=\">",
-        ] {
-            let error = moderator.screen(text).await.unwrap_err();
-            assert!(matches!(error, AppError::InvalidRequest(_)));
-        }
-        moderator
-            .screen(b"an svg is an image format")
-            .await
-            .unwrap();
     }
 
     #[tokio::test]

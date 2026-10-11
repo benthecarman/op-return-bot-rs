@@ -1322,13 +1322,9 @@ async fn parse_multipart_create(request: Request<Body>) -> AppResult<IncomingCre
     let (message, from_file) = if file_has_bytes {
         (file.unwrap_or_default(), true)
     } else if let Some(text) = text {
-        // Raw bytes belong in the file field, which keeps them off social.
-        if std::str::from_utf8(&text).is_err() {
-            return Err(AppError::InvalidRequest(
-                "message must be UTF-8 text; send other bytes as a file".to_owned(),
-            ));
-        }
-        (text, false)
+        // Raw bytes in the text field are a file, so they stay off social.
+        let binary = std::str::from_utf8(&text).is_err();
+        (text, binary)
     } else {
         (Vec::new(), file.is_some())
     };
@@ -1426,7 +1422,7 @@ Content-Disposition: form-data; name=\"file\"; filename=\"\"\r\n\
     }
 
     #[tokio::test]
-    async fn refuses_raw_bytes_in_the_message_field() {
+    async fn treats_raw_bytes_in_the_message_field_as_a_file() {
         let mut body = b"--bound\r\n\
 Content-Disposition: form-data; name=\"message\"\r\n\
 \r\n"
@@ -1436,8 +1432,10 @@ Content-Disposition: form-data; name=\"message\"\r\n\
             .header(header::CONTENT_TYPE, "multipart/form-data; boundary=bound")
             .body(Body::from(body))
             .unwrap();
-        let error = parse_create_request(request).await.err().unwrap();
-        assert!(matches!(error, AppError::InvalidRequest(_)));
+        let parsed = parse_create_request(request).await.unwrap();
+        assert_eq!(parsed.message, b"\xff\xd8\xffhello");
+        assert!(parsed.from_file);
+        assert!(parsed.no_twitter);
     }
 
     #[test]

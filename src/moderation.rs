@@ -494,6 +494,23 @@ fn prepare(bytes: &[u8], kind: FileKind, max_pages: usize) -> Option<Submission>
     }
 }
 
+/// A short name for a payload that is not text, such as "PNG image", for
+/// places that cannot show the bytes. `None` for UTF-8 text.
+#[must_use]
+pub fn describe_file(bytes: &[u8]) -> Option<&'static str> {
+    if std::str::from_utf8(bytes).is_ok() {
+        return None;
+    }
+    Some(match classify(bytes) {
+        FileKind::Image("image/jpeg") => "JPEG image",
+        FileKind::Image("image/png") => "PNG image",
+        FileKind::Image("image/gif") => "GIF image",
+        FileKind::Image(_) => "WebP image",
+        FileKind::Pdf => "PDF",
+        FileKind::Text | FileKind::Unsupported => "file",
+    })
+}
+
 /// Difference hash of an image: each bit says whether a pixel of a 9 by 8
 /// grey thumbnail is darker than its right neighbour. A near copy, such as
 /// the same picture rescaled or saved again, differs in only a few bits.

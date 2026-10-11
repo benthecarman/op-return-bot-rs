@@ -7,7 +7,7 @@ use reqwest_oauth1::{OAuthClientProvider, Secrets};
 use crate::{
     AppConfig, AppError, AppResult,
     config::{NostrConfig, TelegramConfig, TwitterConfig},
-    moderation::{Moderator, Verdict},
+    moderation::{Moderator, Verdict, describe_file},
     payment_service::{CreateRequest, PaymentService},
     repository::{AccountingReport, PaymentRecord, Repository},
 };
@@ -777,7 +777,14 @@ fn completion_notification(
     report: Option<&AccountingReport>,
 ) -> String {
     let request = &record.request;
-    let message = truncate_chars(&request.message_text(), TELEGRAM_MESSAGE_CHARS);
+    // A file's bytes are not text, so it is named by its type and size.
+    let message = describe_file(&request.message).map_or_else(
+        || truncate_chars(&request.message_text(), TELEGRAM_MESSAGE_CHARS),
+        |kind| {
+            let size = i64::try_from(request.message.len()).unwrap_or(i64::MAX);
+            format!("[{kind}, {} bytes]", format_integer(size))
+        },
+    );
     let delivery = if request.nostr_key.is_some() {
         "Nostr"
     } else if request.telegram_id.is_some() {
@@ -1180,6 +1187,11 @@ mod tests {
         ] {
             assert!(notification.contains(expected), "missing {expected}");
         }
+
+        let mut file = record.clone();
+        file.request.message = b"\x89PNG\r\n\x1a\n\xff\x00".repeat(200);
+        let notification = completion_notification(&file, "ab", None, None, Some(&report));
+        assert!(notification.contains("Message: [PNG image, 2,000 bytes]"));
 
         let formatted_report = format_report(&report, true);
         assert!(formatted_report.contains("Total OP_RETURNs: 10"));

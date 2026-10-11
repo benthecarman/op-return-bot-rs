@@ -22,7 +22,6 @@ hex = "0.4"
 http = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 ldk-server-client = { git = "https://github.com/lightningdevkit/ldk-server.git", rev = "21a903ccb89496285c58a55ffdce42a9f0353a05", features = ["serde"] }
-lopdf = "0.42"
 nostr-sdk = "0.45.2"
 pdf-extract = "0.12.1"
 qrcode = "0.14"
@@ -48,6 +47,7 @@ url = { version = "2.5", features = ["serde"] }
 sd-notify = "0.5.0"
 
 [dev-dependencies]
+lopdf = "0.42"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 

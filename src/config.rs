@@ -254,7 +254,7 @@ pub struct ExternalConfig {
     pub slipstream_url: Url,
 }
 
-/// File uploads are refused until `url` and `api_key_file` are both set.
+/// Image and PDF uploads are refused until `url` and `api_key_file` are both set.
 /// Social posts go out until then. `allow_unscreened` skips both checks.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]

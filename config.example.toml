@@ -64,7 +64,7 @@ coinbase_url = "https://api.coinbase.com"
 esplora_url = "https://mempool.space/api/"
 slipstream_url = "https://slipstream.mara.com/api/transactions"
 
-# File uploads are refused until url and api_key_file are both set.
+# Image and PDF uploads are refused until url and api_key_file are both set.
 # Social posts go out until then.
 # Set allow_unscreened = true to skip both checks.
 [moderation]

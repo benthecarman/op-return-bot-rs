@@ -13,12 +13,13 @@ The Rust service keeps these production interfaces.
   the message. A file is stored as private, so it is not posted to
   Twitter or Nostr. Raw bytes in a multipart `message` field are handled
   as a file. Every create path checks the payload by its content, not by
-  the field it came in. UTF-8 text is stored without a check. Anything
-  else is checked before it is stored. JPEG, PNG, GIF, and WEBP go to
-  the decision service as images. A payload with `%PDF-` in its first
-  kilobyte is a PDF. A PDF is rendered to one image per page, and the
-  text layer goes with those images. A PDF with an embedded file is
-  refused, and so is any other file type. The file is stored only when
+  the field it came in. The check is best effort. UTF-8 text is stored
+  without a check. JPEG, PNG, GIF, and WEBP go to the decision service
+  as images. A payload with `%PDF-` in its first kilobyte is a PDF. The
+  first `moderation.max_pdf_pages` pages that render go to the service
+  as images, with the text layer cut to 200,000 bytes. Any other file
+  type, a PDF the service cannot be shown, and a file too slow to
+  prepare are stored without a check. A checked file is stored only when
   the decision is allow and the confidence is at least the configured
   floor. A refusal shows "This file cannot be published." A check that
   does not answer shows "This file could not be checked. Try again."
@@ -27,10 +28,9 @@ The Rust service keeps these production interfaces.
   decision allows that post. A refusal, a low confidence, or a check
   that does not answer skips those posts. The transaction is still
   published. `moderation.allow_unscreened` skips both checks. Until
-  `url` and `api_key_file` are both set, payloads that are not text are
-  refused and posts go out as before. Create routes still accept
-  URL-encoded and JSON bodies, and those routes also accept the same
-  `file` field.
+  `url` and `api_key_file` are both set, images and PDFs are refused and
+  posts go out as before. Create routes still accept URL-encoded and
+  JSON bodies, and those routes also accept the same `file` field.
 - Nostr and LNURL: `/.well-known/nostr.json`,
   `/.well-known/lnurlp/{user}`, and `/lnurlp/{metadata}`
 - Utilities: `/qr` for invoices this service created, and

@@ -22,15 +22,13 @@ const POST_INSTRUCTIONS: &str = "Can this be posted from a public social account
 const POST_ALLOW: &str = "Ordinary speech, including rude or political speech.";
 const POST_REFUSE: &str = "A slur, sexual content involving anyone under 18, or other content that would get a public social account banned.";
 const IMAGE_NOTE: &str = "The attached image is the file to publish.";
-const PDF_NO_TEXT: &str = "This PDF has no text layer. The attached images are its pages.";
-/// A text layer longer than this is not sent. The file is refused instead,
-/// so the decision is not made on a clipped document.
+const PDF_NO_TEXT: &str = "This PDF has no readable text layer. The attached images are its pages.";
+/// A text layer is cut to this length before it is sent.
 const MAX_STATE_BYTES: usize = 200_000;
 /// Longest side of a rendered PDF page, in pixels.
 const TARGET_LONG_SIDE: f32 = 1024.0;
 /// Stay under the renderer's `u16` pixel limit.
 const MAX_PIXEL: f32 = 2048.0;
-const MAX_PDF_DEPTH: usize = 32;
 /// Files prepared at once. A render that will not end holds its slot, so
 /// this bounds the threads and memory such files can take.
 const MAX_RENDERS: usize = 4;
@@ -131,11 +129,16 @@ impl Moderator {
 
     /// Screen a payload before it is stored.
     ///
-    /// Plain text is stored without a check. Anything else must pass the
-    /// decision service, whichever form field it came from.
+    /// The check is best effort. Plain text, and any file the decision
+    /// service cannot be shown, is stored without a check. Images and PDFs
+    /// must pass it, whichever form field they came from.
     pub async fn screen(&self, bytes: &[u8]) -> AppResult<()> {
         let kind = classify(bytes);
         if kind == FileKind::Text {
+            return Ok(());
+        }
+        if kind == FileKind::Unsupported {
+            tracing::info!("file screen stored a file type it cannot check");
             return Ok(());
         }
         match &self.inner {
@@ -178,23 +181,19 @@ impl LiveModerator {
         let owned = bytes.to_vec();
         let max_pages = self.max_pdf_pages;
         // The render keeps running after this wait ends, and keeps its slot.
-        // A file that takes this long is refused, because it would again.
-        let submission = tokio::time::timeout_at(
+        // A file too slow to prepare is stored without a check.
+        let prepared = tokio::time::timeout_at(
             deadline,
             tokio::task::spawn_blocking(move || {
                 let _slot = slot;
                 prepare(&owned, kind, max_pages)
             }),
         )
-        .await
-        .map_err(|_| {
-            tracing::warn!("file screen preparation timed out");
-            AppError::Unpublishable
-        })?
-        .map_err(|_| {
-            tracing::error!("file screen preparation panicked");
-            AppError::FileCheckFailed
-        })??;
+        .await;
+        let Ok(Ok(Some(submission))) = prepared else {
+            tracing::info!("file screen stored a file it could not prepare");
+            return Ok(());
+        };
         tracing::info!(
             kind = submission.kind,
             files = submission.files.len(),
@@ -366,14 +365,13 @@ fn interpret_decision(body: &DecisionBody, question: &str, floor: f64, check: &s
     Verdict::Unusable
 }
 
-fn prepare(bytes: &[u8], kind: FileKind, max_pages: usize) -> AppResult<Submission> {
+/// What the decision service is shown, or `None` when it cannot be shown
+/// anything.
+fn prepare(bytes: &[u8], kind: FileKind, max_pages: usize) -> Option<Submission> {
     match kind {
-        // Text never reaches this point. It is stored without a check.
-        FileKind::Text | FileKind::Unsupported => {
-            tracing::info!("file screen refused an unsupported file");
-            Err(AppError::Unpublishable)
-        }
-        FileKind::Image(mime) => Ok(Submission {
+        // Neither reaches this point. Both are stored without a check.
+        FileKind::Text | FileKind::Unsupported => None,
+        FileKind::Image(mime) => Some(Submission {
             state: IMAGE_NOTE.to_owned(),
             files: vec![data_url(mime, bytes)],
             kind: "image",
@@ -408,112 +406,63 @@ fn is_pdf(bytes: &[u8]) -> bool {
         .any(|window| window == b"%PDF-")
 }
 
-fn prepare_pdf(bytes: &[u8], max_pages: usize) -> AppResult<Submission> {
-    if embedded_file(bytes)? {
-        tracing::info!("file screen refused a pdf with an embedded file");
-        return Err(AppError::Unpublishable);
+/// Shows the service the text layer and the first `max_pages` pages that
+/// render.
+fn prepare_pdf(bytes: &[u8], max_pages: usize) -> Option<Submission> {
+    let text = pdf_text(bytes);
+    let files = hayro::hayro_syntax::Pdf::new(bytes.to_vec())
+        .map(|pdf| render_pages(&pdf, max_pages))
+        .unwrap_or_default();
+    if text.is_none() && files.is_empty() {
+        return None;
     }
-    let state = pdf_state(bytes)?;
-    let pdf = hayro::hayro_syntax::Pdf::new(bytes.to_vec()).map_err(|_| {
-        tracing::info!("file screen refused a pdf it could not read");
-        AppError::Unpublishable
-    })?;
-    let files = render_pages(&pdf, max_pages)?;
-    Ok(Submission {
-        state,
+    Some(Submission {
+        state: text.unwrap_or_else(|| PDF_NO_TEXT.to_owned()),
         files,
         kind: "pdf",
     })
 }
 
-fn embedded_file(bytes: &[u8]) -> AppResult<bool> {
-    let document = lopdf::Document::load_mem(bytes).map_err(|_| {
-        tracing::info!("file screen refused a pdf it could not read");
-        AppError::Unpublishable
-    })?;
-    Ok(document
-        .objects
-        .values()
-        .any(|object| object_has_embedded(object, 0)))
-}
-
-fn object_has_embedded(object: &lopdf::Object, depth: usize) -> bool {
-    if depth > MAX_PDF_DEPTH {
-        return true;
-    }
-    match object {
-        lopdf::Object::Dictionary(dict) => dict_has_embedded(dict, depth),
-        lopdf::Object::Stream(stream) => dict_has_embedded(&stream.dict, depth),
-        lopdf::Object::Array(items) => items
-            .iter()
-            .any(|item| object_has_embedded(item, depth + 1)),
-        _ => false,
-    }
-}
-
-fn dict_has_embedded(dict: &lopdf::Dictionary, depth: usize) -> bool {
-    if dict.has(b"EF") || dict.has(b"EmbeddedFiles") || dict.has(b"AF") {
-        return true;
-    }
-    if let Ok(lopdf::Object::Name(name)) = dict.get(b"Type")
-        && name.as_slice() == b"EmbeddedFile"
-    {
-        return true;
-    }
-    dict.as_hashmap()
-        .values()
-        .any(|value| object_has_embedded(value, depth + 1))
-}
-
-fn pdf_state(bytes: &[u8]) -> AppResult<String> {
+/// The text layer, cut to `MAX_STATE_BYTES`.
+fn pdf_text(bytes: &[u8]) -> Option<String> {
     let extracted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         pdf_extract::extract_text_from_mem(bytes)
     }));
     let Ok(Ok(text)) = extracted else {
         tracing::info!("file screen could not read the pdf text layer");
-        return Ok(PDF_NO_TEXT.to_owned());
+        return None;
     };
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return Ok(PDF_NO_TEXT.to_owned());
+        return None;
     }
-    if trimmed.len() > MAX_STATE_BYTES {
-        tracing::info!("file screen refused a pdf whose text layer is too long");
-        return Err(AppError::Unpublishable);
-    }
-    Ok(trimmed.to_owned())
+    Some(trimmed[..trimmed.floor_char_boundary(MAX_STATE_BYTES)].to_owned())
 }
 
-fn render_pages(pdf: &hayro::hayro_syntax::Pdf, max_pages: usize) -> AppResult<Vec<String>> {
+fn render_pages(pdf: &hayro::hayro_syntax::Pdf, max_pages: usize) -> Vec<String> {
     let pages = pdf.pages();
-    if pages.is_empty() {
-        tracing::info!("file screen refused a pdf with no pages");
-        return Err(AppError::Unpublishable);
-    }
     if pages.len() > max_pages {
         tracing::info!(
             pages = pages.len(),
             max_pages,
-            "file screen refused a pdf with too many pages"
+            "file screen checks only the first pages of a pdf"
         );
-        return Err(AppError::Unpublishable);
     }
     let cache = hayro::RenderCache::new();
     let interpreter = hayro::hayro_interpret::InterpreterSettings::default();
     let render_settings = hayro::RenderSettings::default();
-    let mut files = Vec::with_capacity(pages.len());
-    for page in pages.iter() {
+    let mut files = Vec::new();
+    for page in pages.iter().take(max_pages) {
         let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             render_page(page, &cache, &interpreter, render_settings)
         }));
         if let Ok(Some(png)) = rendered {
             files.push(data_url("image/png", &png));
         } else {
-            tracing::info!("file screen refused a pdf page it could not render");
-            return Err(AppError::Unpublishable);
+            tracing::info!("file screen skipped a pdf page it could not render");
         }
     }
-    Ok(files)
+    files
 }
 
 fn render_page<'a>(
@@ -618,7 +567,7 @@ mod tests {
     /// A payload the check treats as an image.
     const IMAGE: &[u8] = b"GIF89ahello";
 
-    fn prepare_file(bytes: &[u8], max_pages: usize) -> AppResult<Submission> {
+    fn prepare_file(bytes: &[u8], max_pages: usize) -> Option<Submission> {
         prepare(bytes, classify(bytes), max_pages)
     }
 
@@ -831,7 +780,7 @@ mod tests {
     #[tokio::test]
     async fn skips_the_check_when_unscreened_files_are_allowed() {
         let moderator = Moderator { inner: Mode::Skip };
-        moderator.screen(&[0xff, 0x00]).await.unwrap();
+        moderator.screen(IMAGE).await.unwrap();
     }
 
     #[tokio::test]
@@ -868,15 +817,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn screens_binary_bytes_from_any_field() {
-        let moderator = Moderator {
-            inner: Mode::Closed,
-        };
-        let error = moderator.screen(b"\xff\x00hello").await.unwrap_err();
-        assert!(matches!(error, AppError::FileCheckFailed));
-    }
-
-    #[tokio::test]
     async fn sends_a_gif_as_an_image() {
         let seen = Arc::new(Mutex::new(None));
         let app = Router::new()
@@ -910,7 +850,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refuses_an_unsupported_file_without_asking() {
+    async fn stores_an_unsupported_file_without_asking() {
         let seen = Arc::new(Mutex::new(None));
         let app = Router::new()
             .route("/v1/systemone", post(record_and_allow))
@@ -922,9 +862,14 @@ mod tests {
             8,
             Duration::from_secs(2),
         );
-        let error = moderator.screen(b"\xff\x00hello").await.unwrap_err();
-        assert!(matches!(error, AppError::Unpublishable));
+        moderator.screen(b"\xff\x00hello").await.unwrap();
         assert!(seen.lock().unwrap().is_none());
+        Moderator {
+            inner: Mode::Closed,
+        }
+        .screen(b"\xff\x00hello")
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -1014,21 +959,29 @@ mod tests {
     }
 
     #[test]
-    fn refuses_a_pdf_with_an_embedded_file() {
-        let error = prepare_file(&embedded_pdf(), 8).unwrap_err();
-        assert!(matches!(error, AppError::Unpublishable));
+    fn screens_a_pdf_with_an_embedded_file() {
+        let prepared = prepare_file(&embedded_pdf(), 8).unwrap();
+        assert_eq!(prepared.files.len(), 1);
     }
 
     #[test]
-    fn refuses_a_pdf_with_too_many_pages() {
-        let error = prepare_file(&pdf_with_pages(&["One", "Two"]), 1).unwrap_err();
-        assert!(matches!(error, AppError::Unpublishable));
+    fn screens_the_first_pages_of_a_long_pdf() {
+        let prepared = prepare_file(&pdf_with_pages(&["One", "Two"]), 1).unwrap();
+        assert_eq!(prepared.files.len(), 1);
+        assert!(prepared.state.contains("Two"));
     }
 
     #[test]
-    fn refuses_a_pdf_that_does_not_parse() {
-        let error = prepare_file(b"%PDF-1.7 not a pdf", 8).unwrap_err();
-        assert!(matches!(error, AppError::Unpublishable));
+    fn stores_a_pdf_that_does_not_parse_without_asking() {
+        assert!(prepare_file(b"%PDF-1.7 not a pdf", 8).is_none());
+    }
+
+    #[test]
+    fn cuts_a_long_text_layer() {
+        let long = "x".repeat(MAX_STATE_BYTES + 10);
+        let prepared = prepare_file(&pdf_with_pages(&[long.as_str()]), 8).unwrap();
+        assert!(prepared.state.starts_with("xxx"));
+        assert!(prepared.state.len() <= MAX_STATE_BYTES);
     }
 
     #[test]

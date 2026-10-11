@@ -68,8 +68,8 @@ slipstream_url = "https://slipstream.mara.com/api/transactions"
 # Social posts go out until then.
 # Set allow_unscreened = true to skip both checks.
 # A file is refused only when the service refuses it. confidence_floor
-# applies to social posts. It measures how peaked the answer is, so 0.9
-# needs about 98.7% probability on a two-option question.
+# applies to social posts. Confidence follows the TypeSafe spec,
+# (p_max - 1/n) / (1 - 1/n), so 0.9 needs 95% on the two-option question.
 [moderation]
 allow_unscreened = false
 url = "https://moderation.example.ts.net/v1/systemone"

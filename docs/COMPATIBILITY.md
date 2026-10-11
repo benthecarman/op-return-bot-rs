@@ -29,14 +29,14 @@ The Rust service keeps these production interfaces.
   re-saved copy of a refused image, is then refused without asking the
   service. A public typed message is still stored. It is posted to
   Twitter and Nostr only when a separate decision allows that post with
-  confidence at least `moderation.confidence_floor`. Confidence is how
-  peaked the answer is, not its probability. A refusal, a low
-  confidence, or a check that does not answer skips those posts. The
-  transaction is still published. `moderation.allow_unscreened` skips
-  both checks. Until `url` and `api_key_file` are both set, images and
-  PDFs are refused and posts go out as before. Create routes still
-  accept URL-encoded and JSON bodies, and those routes also accept the
-  same `file` field.
+  confidence at least `moderation.confidence_floor`. Confidence follows
+  the TypeSafe spec, so on this two-option question 0.9 means 95% on the
+  chosen answer. A refusal, a low confidence, or a check that does not
+  answer skips those posts. The transaction is still published.
+  `moderation.allow_unscreened` skips both checks. Until `url` and
+  `api_key_file` are both set, images and PDFs are refused and posts go
+  out as before. Create routes still accept URL-encoded and JSON bodies,
+  and those routes also accept the same `file` field.
 - Nostr and LNURL: `/.well-known/nostr.json`,
   `/.well-known/lnurlp/{user}`, and `/lnurlp/{metadata}`
 - Utilities: `/qr` for invoices this service created, and

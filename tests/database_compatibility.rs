@@ -29,6 +29,52 @@ async fn migrates_a_fresh_database() {
     assert!(names.iter().any(|name| name == "claim_preimage"));
 }
 
+/// The data migration decodes a value only when the old reader did: valid
+/// hex of even length, stored as text or as a blob. Everything else keeps
+/// its bytes.
+#[tokio::test]
+async fn converts_legacy_hex_messages_to_raw_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = Database::connect(&DatabaseConfig {
+        path: temp.path().join("invoices.sqlite"),
+        max_connections: 1,
+        busy_timeout_seconds: 5,
+    })
+    .await
+    .unwrap();
+    sqlx::raw_sql(
+        "CREATE TABLE op_return_requests (id INTEGER PRIMARY KEY, message_bytes BLOB NOT NULL)",
+    )
+    .execute(database.pool())
+    .await
+    .unwrap();
+    sqlx::raw_sql(
+        "INSERT INTO op_return_requests (id, message_bytes) VALUES \
+         (1, '68656C6c6f'), (2, X'FF002A'), (3, 'hello'), \
+         (4, CAST('6869' AS BLOB)), (5, 'abc'), (6, '6g')",
+    )
+    .execute(database.pool())
+    .await
+    .unwrap();
+
+    sqlx::raw_sql(include_str!("../migrations/0009_raw_message_bytes.sql"))
+        .execute(database.pool())
+        .await
+        .unwrap();
+
+    let converted: Vec<(i64, String, Vec<u8>)> = sqlx::query_as(
+        "SELECT id, typeof(message_bytes), message_bytes FROM op_return_requests ORDER BY id",
+    )
+    .fetch_all(database.pool())
+    .await
+    .unwrap();
+    let expected: [&[u8]; 6] = [b"hello", b"\xff\x00\x2a", b"hello", b"hi", b"abc", b"6g"];
+    for ((id, kind, bytes), want) in converted.into_iter().zip(expected) {
+        assert_eq!(kind, "blob", "row {id}");
+        assert_eq!(bytes, want, "row {id}");
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires ORB_PRODUCTION_DB"]
 async fn migrates_a_production_snapshot_without_losing_rows() {

@@ -61,14 +61,14 @@ async fn creates_and_reads_a_legacy_compatible_invoice() {
             .fetch_one(database.pool())
             .await
             .unwrap();
-    let stored_message: String =
+    let stored_message: Vec<u8> =
         sqlx::query_scalar("SELECT message_bytes FROM op_return_requests WHERE id = ?")
             .bind(created.request.id)
             .fetch_one(database.pool())
             .await
             .unwrap();
-    assert_eq!(stored_type, "text");
-    assert_eq!(stored_message, "68656c6c6f");
+    assert_eq!(stored_type, "blob");
+    assert_eq!(stored_message, b"hello");
 
     let found = repository
         .find_by_payment_hash(invoice().payment_hash)

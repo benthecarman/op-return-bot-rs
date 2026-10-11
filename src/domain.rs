@@ -110,22 +110,6 @@ pub enum PaymentStatus {
     Complete,
 }
 
-pub(crate) fn decode_legacy_bytes(value: &[u8]) -> AppResult<Vec<u8>> {
-    if let Ok(text) = std::str::from_utf8(value)
-        && text.len().is_multiple_of(2)
-        && text.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
-        return hex::decode(text).map_err(|error| {
-            AppError::Internal(format!("database contains invalid hex bytes: {error}"))
-        });
-    }
-    Ok(value.to_vec())
-}
-
-pub(crate) fn encode_legacy_bytes(value: &[u8]) -> String {
-    hex::encode(value)
-}
-
 pub(crate) fn decode_legacy_fee_rate(value: &str) -> AppResult<u64> {
     let bytes = hex::decode(value).map_err(|error| {
         AppError::Internal(format!("database contains an invalid fee rate: {error}"))
@@ -143,16 +127,6 @@ pub(crate) fn encode_legacy_fee_rate(value: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn decodes_legacy_hex_message() {
-        assert_eq!(decode_legacy_bytes(b"68656c6c6f").unwrap(), b"hello");
-    }
-
-    #[test]
-    fn preserves_native_blob() {
-        assert_eq!(decode_legacy_bytes(&[0, 255, 42]).unwrap(), [0, 255, 42]);
-    }
 
     #[test]
     fn round_trips_legacy_fee_rate() {

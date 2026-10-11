@@ -4,7 +4,7 @@ use crate::{
     AppError, AppResult, Database,
     domain::{
         Bolt12Offer, Invoice, LightningBackend, OnChainPayment, OpReturnRequest,
-        decode_legacy_bytes, decode_legacy_fee_rate, encode_legacy_bytes, encode_legacy_fee_rate,
+        decode_legacy_fee_rate, encode_legacy_fee_rate,
     },
 };
 
@@ -163,7 +163,7 @@ impl TryFrom<RequestRow> for OpReturnRequest {
     fn try_from(row: RequestRow) -> AppResult<Self> {
         Ok(Self {
             id: row.id,
-            message: decode_legacy_bytes(&row.message_bytes)?,
+            message: row.message_bytes,
             no_twitter: row.no_twitter,
             fee_rate_sat_vb: decode_legacy_fee_rate(&row.fee_rate)?,
             node_id: row.node_id,
@@ -216,7 +216,7 @@ impl TryFrom<RecentRow> for RecentRequest {
             id: row.id,
             txid: row.txid,
             created_at: row.time,
-            message: decode_legacy_bytes(&row.message_bytes)?,
+            message: row.message_bytes,
         })
     }
 }
@@ -896,8 +896,7 @@ impl Repository {
              ) SELECT \
              (SELECT count(*) FROM filtered WHERE txid IS NOT NULL), \
              (SELECT count(*) FROM filtered WHERE txid IS NOT NULL AND \
-                CASE WHEN typeof(message_bytes) = 'text' \
-                     THEN length(message_bytes) / 2 ELSE length(message_bytes) END > 80), \
+                length(message_bytes) > 80), \
              (SELECT count(*) FROM filtered r JOIN on_chain_payments p \
                 ON p.op_return_request_id = r.id \
                 WHERE r.txid IS NOT NULL AND p.txid IS NOT NULL), \
@@ -905,8 +904,7 @@ impl Repository {
              (SELECT coalesce(sum(profit), 0) FROM filtered), \
              (SELECT coalesce(sum(vsize), 0) FROM filtered), \
              (SELECT coalesce(sum(vsize), 0) FROM filtered WHERE \
-                CASE WHEN typeof(message_bytes) = 'text' \
-                     THEN length(message_bytes) / 2 ELSE length(message_bytes) END > 80), \
+                length(message_bytes) > 80), \
              (SELECT count(*) FROM nip5 n JOIN filtered r \
                 ON r.id = n.op_return_request_id WHERE r.txid IS NOT NULL), \
              (SELECT coalesce(sum(amount), 0) FROM zaps \
@@ -1019,7 +1017,6 @@ async fn insert_request(
     transaction: &mut Transaction<'_, Sqlite>,
     request: &NewRequest<'_>,
 ) -> AppResult<OpReturnRequest> {
-    let message = encode_legacy_bytes(request.message);
     let fee_rate = encode_legacy_fee_rate(request.fee_rate_sat_vb);
     let result = sqlx::query(
         "INSERT INTO op_return_requests \
@@ -1027,7 +1024,7 @@ async fn insert_request(
           dvm_event, time, \"transaction\", txid, profit, chain_fee, vsize, closed, btc_price) \
          VALUES (?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, NULL, NULL, 0, 0)",
     )
-    .bind(message)
+    .bind(request.message)
     .bind(request.no_twitter)
     .bind(fee_rate)
     .bind(request.node_id)

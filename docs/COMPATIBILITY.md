@@ -54,9 +54,11 @@ the existing plain-text status responses are unchanged.
 
 ## Data and payments
 
-- Existing SQLite rows remain in place. Legacy hex-encoded message and fee-rate
-  values remain readable and new rows use the same encoding. The database
-  uses WAL with `synchronous=FULL`.
+- Existing SQLite rows remain in place. A migration rewrites legacy
+  hex-encoded messages as raw bytes, and new rows store raw bytes. A build
+  from before that migration misreads a message that is itself valid hex,
+  so do not roll back past it. Fee rates keep the legacy hex encoding.
+  The database uses WAL with `synchronous=FULL`.
 - Lightning invoices for requests commit to the SHA-256 of the message in
   their description hash, as before. The invoice page shows the same hash.
 - New requests are accepted while the mempool chain limit is active. The

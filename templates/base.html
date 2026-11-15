@@ -7,6 +7,8 @@
   <meta name="theme-color" content="#1d1f31">
   <title>{% block title %}OP_RETURN Bot{% endblock %}</title>
   {% block refresh %}{% endblock %}
+  <meta name="description" content="{% block description %}Write a message or a file into the Bitcoin blockchain in an OP_RETURN output. Pay with Lightning or on-chain bitcoin. No account needed.{% endblock %}">
+  {% block head %}{% endblock %}
   <link rel="preload" href="/assets/fonts/inter-latin-wght.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/assets/stylesheets/main.css?v={{ crate::web::asset_version() }}">
   <link rel="icon" type="image/svg+xml" href="/assets/images/logo.svg">
@@ -15,9 +17,8 @@
   <meta name="twitter:site" content="@benthecarman">
   <meta name="twitter:creator" content="@benthecarman">
   <meta name="twitter:image" content="https://opreturnbot.com/assets/images/op-return-bot.png">
-  <meta property="og:url" content="https://opreturnbot.com">
   <meta property="og:title" content="OP_RETURN Bot">
-  <meta property="og:description" content="OP_RETURN Bot will create an OP_RETURN output for you, you just need to pay the fees.">
+  <meta property="og:description" content="Write a message or a file into the Bitcoin blockchain in an OP_RETURN output. Pay with Lightning or on-chain bitcoin.">
   <meta property="og:image" content="https://opreturnbot.com/assets/images/op-return-bot.png">
   <meta http-equiv="onion-location" content="{{ onion_url }}">
 </head>

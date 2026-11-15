@@ -223,6 +223,15 @@ struct IndexTemplate<'a> {
     message: &'a str,
     /// The upload tab stays selected when a file was rejected.
     file_mode: bool,
+    json_ld: &'a str,
+}
+
+#[derive(Template)]
+#[template(path = "faq.html")]
+struct FaqTemplate<'a> {
+    onion_url: &'a str,
+    faq: &'a [crate::agent_content::Faq],
+    json_ld: &'a str,
 }
 
 #[derive(Template)]
@@ -348,9 +357,12 @@ pub fn router(state: AppState) -> Router {
         .route("/invoice", get(invoice))
         .route("/success", get(success))
         .route("/connect", get(connect))
+        .route("/faq", get(faq_page))
         .route("/qr", get(qr))
         .route("/admin/walletnotify", post(wallet_notify))
         .route("/sitemap.xml", get(sitemap))
+        .route("/robots.txt", get(robots))
+        .route("/llms.txt", get(llms_txt))
         .route("/auth.md", get(auth_markdown))
         .route("/.well-known/api-catalog", get(api_catalog))
         .route(
@@ -382,11 +394,7 @@ async fn index(State(state): State<AppState>, headers: HeaderMap) -> AppResult<R
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default();
     let mut response = if accepts.contains("text/markdown") && !accepts.contains("text/html") {
-        (
-            [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
-            crate::agent_content::INDEX_MD,
-        )
-            .into_response()
+        index_markdown(&state)
     } else {
         render_index(&state, "", "", false).await?.into_response()
     };
@@ -416,6 +424,7 @@ async fn render_index(
     file_mode: bool,
 ) -> AppResult<Html<String>> {
     let recent = recent_tiles(state, None, RECENT_PAGE).await?;
+    let json_ld = crate::agent_content::app_json_ld(public_base(state));
     render(IndexTemplate {
         onion_url: state.config.server.onion_url.as_str(),
         recent: &recent,
@@ -423,7 +432,38 @@ async fn render_index(
         error,
         message,
         file_mode,
+        json_ld: &json_ld,
     })
+}
+
+async fn faq_page(State(state): State<AppState>) -> AppResult<Html<String>> {
+    let base = public_base(&state);
+    let faq = crate::agent_content::faq(&state.config.payments, base);
+    let json_ld = crate::agent_content::faq_json_ld(&faq, base);
+    render(FaqTemplate {
+        onion_url: state.config.server.onion_url.as_str(),
+        faq: &faq,
+        json_ld: &json_ld,
+    })
+}
+
+fn public_base(state: &AppState) -> &str {
+    state
+        .config
+        .server
+        .public_url
+        .as_str()
+        .trim_end_matches('/')
+}
+
+fn index_markdown(state: &AppState) -> Response {
+    let base = public_base(state);
+    let faq = crate::agent_content::faq(&state.config.payments, base);
+    (
+        [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
+        crate::agent_content::index_markdown(&faq, base),
+    )
+        .into_response()
 }
 
 async fn create_request(
@@ -962,11 +1002,35 @@ async fn sitemap(State(state): State<AppState>) -> Response {
          <url><loc>{base}/</loc></url>\n\
          <url><loc>{base}/nip5</loc></url>\n\
          <url><loc>{base}/connect</loc></url>\n\
+         <url><loc>{base}/faq</loc></url>\n\
          </urlset>\n"
     );
     (
         [(header::CONTENT_TYPE, "application/xml; charset=utf-8")],
         body,
+    )
+        .into_response()
+}
+
+async fn llms_txt(State(state): State<AppState>) -> Response {
+    index_markdown(&state)
+}
+
+async fn robots(State(state): State<AppState>) -> Response {
+    let base = public_base(&state);
+    (
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        format!(
+            "User-agent: *\n\
+             Content-Signal: search=yes, ai-input=yes, ai-train=yes\n\
+             Allow: /\n\
+             Disallow: /admin/\n\
+             Disallow: /invoice\n\
+             Disallow: /success\n\
+             Disallow: /qr\n\
+             \n\
+             Sitemap: {base}/sitemap.xml\n"
+        ),
     )
         .into_response()
 }
@@ -1439,7 +1503,29 @@ Content-Disposition: form-data; name=\"message\"\r\n\
     }
 
     #[test]
+    fn faq_page_shows_every_answer_and_its_json_ld() {
+        let faq = crate::agent_content::faq(
+            &crate::config::PaymentConfig::default(),
+            "https://example.com",
+        );
+        let json_ld = crate::agent_content::faq_json_ld(&faq, "https://example.com");
+        let html = FaqTemplate {
+            onion_url: "http://onion.example",
+            faq: &faq,
+            json_ld: &json_ld,
+        }
+        .render()
+        .unwrap();
+        for entry in &faq {
+            assert!(html.contains(&format!("<h2>{}</h2>", entry.question)));
+        }
+        assert!(html.contains("\"@type\":\"FAQPage\""));
+        assert!(html.contains("<link rel=\"canonical\" href=\"https://opreturnbot.com/faq\">"));
+    }
+
+    #[test]
     fn home_page_offers_a_file_upload() {
+        let json_ld = crate::agent_content::app_json_ld("https://example.com");
         let typed = IndexTemplate {
             onion_url: "http://onion.example",
             recent: &[],
@@ -1447,6 +1533,7 @@ Content-Disposition: form-data; name=\"message\"\r\n\
             error: "",
             message: "kept",
             file_mode: false,
+            json_ld: &json_ld,
         }
         .render()
         .unwrap();
@@ -1456,6 +1543,9 @@ Content-Disposition: form-data; name=\"message\"\r\n\
         assert!(!typed.contains("id=\"noTwitterFile\""));
         assert!(typed.contains("id=\"source-text\" checked"));
         assert!(typed.contains("kept</textarea>"));
+        assert!(typed.contains("\"@type\":\"WebApplication\""));
+        assert!(typed.contains("href=\"/faq\""));
+        assert!(typed.contains("<link rel=\"canonical\" href=\"https://opreturnbot.com/\">"));
         assert!(!typed.contains("id=\"source-file\" checked"));
 
         let uploaded = IndexTemplate {
@@ -1465,6 +1555,7 @@ Content-Disposition: form-data; name=\"message\"\r\n\
             error: "invalid request: message is too long",
             message: "",
             file_mode: true,
+            json_ld: &json_ld,
         }
         .render()
         .unwrap();
@@ -1478,6 +1569,7 @@ Content-Disposition: form-data; name=\"message\"\r\n\
             error: "This file cannot be published.",
             message: "",
             file_mode: true,
+            json_ld: &json_ld,
         }
         .render()
         .unwrap();

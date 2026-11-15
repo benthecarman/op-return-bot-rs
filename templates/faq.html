@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}FAQ: prices, limits, and payment | OP_RETURN Bot{% endblock %}
+{% block description %}How OP_RETURN Bot works: what it costs, how large a message can be, how to pay with Lightning or on-chain bitcoin, and who can see your message.{% endblock %}
+{% block head %}<link rel="canonical" href="https://opreturnbot.com/faq">
+  <meta property="og:url" content="https://opreturnbot.com/faq">
+  <!--email_off--><script type="application/ld+json">{{ json_ld|safe }}</script><!--/email_off-->{% endblock %}
+{% block content %}
+<section class="page wrap">
+  <!--email_off--><div class="stack narrow">
+    <div class="card">
+      <h1>Questions about OP_RETURN Bot</h1>
+      <p class="sub">OP_RETURN Bot writes your message or file into the Bitcoin blockchain. You only pay the fees.</p>
+      <a class="btn" href="/">Create an OP_RETURN</a>
+    </div>
+    {% for entry in faq %}<div class="card">
+      <h2>{{ entry.question }}</h2>
+      <p>{{ entry.answer }}</p>
+    </div>
+    {% endfor %}
+  </div><!--/email_off-->
+</section>
+{% endblock %}

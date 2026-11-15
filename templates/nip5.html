@@ -1,5 +1,8 @@
 {% extends "base.html" %}
-{% block title %}Nostr NIP-05{% endblock %}
+{% block title %}Nostr NIP-05 identity | OP_RETURN Bot{% endblock %}
+{% block description %}Get a Nostr NIP-05 identifier at opreturnbot.com, written into the Bitcoin blockchain in an OP_RETURN output. Pay with Lightning or on-chain bitcoin.{% endblock %}
+{% block head %}<link rel="canonical" href="https://opreturnbot.com/nip5">
+  <meta property="og:url" content="https://opreturnbot.com/nip5">{% endblock %}
 {% block page %}nip5{% endblock %}
 {% block content %}
 <section class="main fit wrap">
@@ -11,7 +14,7 @@
     <input maxlength="10" minlength="1" type="text" placeholder="bob" name="name" id="name" value="{{ name }}" required>
     <label class="field" for="pubkey">Public key</label>
     <input minlength="1" type="text" placeholder="npub1..." name="pubkey" id="pubkey" value="{{ pubkey }}" required>
-    <div class="row"><span class="meta">Your ID will be <span class="hl">name@opreturnbot.com</span></span><button class="btn" type="submit">Create invoice</button></div>
+    <div class="row"><span class="meta">Your ID will be <span class="hl"><!--email_off-->name@opreturnbot.com<!--/email_off--></span></span><button class="btn" type="submit">Create invoice</button></div>
   </form>
   <div class="side">
     <div class="card">

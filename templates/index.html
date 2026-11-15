@@ -1,4 +1,8 @@
 {% extends "base.html" %}
+{% block title %}OP_RETURN Bot: Write messages to the Bitcoin blockchain{% endblock %}
+{% block head %}<link rel="canonical" href="https://opreturnbot.com/">
+  <meta property="og:url" content="https://opreturnbot.com/">
+  <!--email_off--><script type="application/ld+json">{{ json_ld|safe }}</script><!--/email_off-->{% endblock %}
 {% block page %}create{% endblock %}
 {% block content %}
 <section class="main wrap">
@@ -36,10 +40,11 @@
     <div class="card">
       <h2>What is an OP_RETURN?</h2>
       <p>A provably prunable output. Nodes do not keep it in the UTXO set, but it stays in the blockchain for good. It proves your data existed at a given time.</p>
+      <a class="btn ghost" href="/faq">Read the FAQ</a>
     </div>
     <div class="card">
       <h2>NIP-05</h2>
-      <p>Get a Nostr identifier like <span class="hl">bob@opreturnbot.com</span>, written into the blockchain.</p>
+      <p>Get a Nostr identifier like <span class="hl"><!--email_off-->bob@opreturnbot.com<!--/email_off--></span>, written into the blockchain.</p>
       <a class="btn ghost" href="/nip5">Set up NIP-05</a>
     </div>
   </div>
